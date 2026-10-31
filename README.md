@@ -195,6 +195,9 @@ Measured on Linux x86-64, glibc, `-d:release`:
 
 - A minimal TLS client, stripped: about 600 KB, with nghttp2 and BearSSL
   linked in. It needs only libc.
+- Fully static with musl ([docs/static-build.md](docs/static-build.md)): 707 KB
+  stripped, 286 KB packed with UPX, 1.1 MiB RSS for a client doing mTLS, gzip
+  and a streaming call.
 - Client RSS: 2.9 MiB after the first call over TLS, still 2.9 MiB after 1,000
   more calls, and 3.2 MiB after another 200 TLS connect/close cycles.
 - Server RSS (`tools/memprobe.sh`): 2.9 MiB plaintext and 3.5 MiB with TLS

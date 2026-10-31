@@ -14,3 +14,4 @@ nimcache/
 !/tools/*.sh
 !/tests/proto/
 !/tests/gen/
+!/examples/
