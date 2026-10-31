@@ -95,8 +95,8 @@ over (the client cancelled or left, the deadline passed, or the server is
 stopping):
 
 ```nim
-proc export(ctx: var ServerContext; req: ExportRequest;
-            output: var ServerWriter[Chunk]) {.nimcall, gcsafe.} =
+proc exportData(ctx: var ServerContext; req: ExportRequest;
+                output: var ServerWriter[Chunk]) {.nimcall, gcsafe.} =
   for part in parts(req):
     ctx.checkCancelled()        # raises CANCELLED / DEADLINE_EXCEEDED once over
     output.send part
