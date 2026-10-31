@@ -40,6 +40,8 @@ case that had `defer: call.close()`, and `close` contains a `try/except`. A
 case that should have failed reported PASS. The library had the same pattern
 in `unaryCall` and in `blocking.request`.
 
+Report text: [nim-issue-finally.md](nim-issue-finally.md).
+
 **Workaround.** `grpc/cleanup.withCleanup` catches, runs the cleanup with no
 exception pending, and re-raises. Every `finally` left in the library only
 releases a lock (`pthread_mutex_unlock`, which has no exception handling of
