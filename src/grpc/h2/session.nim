@@ -1,0 +1,299 @@
+## I/O-free HTTP/2 session on top of nghttp2.
+##
+## The session never touches a socket. Feed received bytes with `recv`,
+## collect what to transmit with `takeOutput`, and read what happened with
+## `takeEvents`. Any I/O model (blocking threads, chronos, a test harness that
+## pipes two sessions into each other) can drive it.
+##
+## Memory rules (ORC):
+## * nghttp2 gets raw `ptr` to Nim objects, never `ref` casts, so no reference
+##   count is touched from C.
+## * Every object handed to C as a pointer is owned by the session (`outs`
+##   table) for as long as nghttp2 may call back with it.
+## * Callbacks never let an exception cross into C: they are `raises: []`.
+
+import std/tables
+import ./nghttp2
+
+type
+  H2Error* = object of CatchableError
+    code*: int
+
+  Header* = tuple[name, value: string]
+
+  H2EventKind* = enum
+    evHeaders      ## a complete HEADERS block (request, response or trailers)
+    evData         ## the payload of one DATA frame
+    evStreamClosed ## the stream is gone; `errorCode` is 0 on a clean close
+
+  H2Event* = object
+    streamId*: int32
+    case kind*: H2EventKind
+    of evHeaders:
+      headers*: seq[Header]
+      headersEndStream*: bool
+    of evData:
+      data*: seq[byte]
+      dataEndStream*: bool
+    of evStreamClosed:
+      errorCode*: uint32
+
+  OutStreamObj = object
+    buf: seq[byte]
+    pos: int
+    eof: bool          ## no more DATA will be queued
+    trailers: seq[Header]
+    hasTrailers: bool
+    deferred: bool     ## the read callback returned DEFERRED
+  OutStream = ref OutStreamObj
+
+  H2SessionObj* = object
+    raw: ptr Nghttp2Session
+    events: seq[H2Event]
+    inHeaders: Table[int32, seq[Header]]
+    inData: Table[int32, seq[byte]]
+    outs: Table[int32, OutStream]
+    failure: string    ## first error seen inside a callback
+  H2Session* = ref H2SessionObj
+
+proc `=destroy`*(s: H2SessionObj) =
+  if s.raw != nil:
+    nghttp2_session_del(s.raw)
+  `=destroy`(s.events.addr[])
+  `=destroy`(s.inHeaders.addr[])
+  `=destroy`(s.inData.addr[])
+  `=destroy`(s.outs.addr[])
+  `=destroy`(s.failure.addr[])
+
+proc `=copy`*(dst: var H2SessionObj; src: H2SessionObj) {.error.}
+
+proc raiseH2(code: int; what: string) {.noreturn.} =
+  var e = newException(H2Error, what & ": " & $nghttp2_strerror(code.cint))
+  e.code = code
+  raise e
+
+template sess(userData: pointer): ptr H2SessionObj =
+  cast[ptr H2SessionObj](userData)
+
+proc toString(p: ptr uint8; n: csize_t): string =
+  result = newString(n.int)
+  if n > 0: copyMem(result[0].addr, p, n.int)
+
+# ---------------------------------------------------------------- callbacks
+
+proc onBeginHeaders(session: ptr Nghttp2Session; frame: ptr Nghttp2Frame;
+                    userData: pointer): cint {.cdecl, raises: [].} =
+  let s = sess(userData)
+  s.inHeaders[frame.hd.stream_id] = @[]
+  0
+
+proc onHeader(session: ptr Nghttp2Session; frame: ptr Nghttp2Frame;
+              name: ptr uint8; namelen: csize_t; value: ptr uint8; valuelen: csize_t;
+              flags: uint8; userData: pointer): cint {.cdecl, raises: [].} =
+  let s = sess(userData)
+  s.inHeaders.mgetOrPut(frame.hd.stream_id, @[]).add(
+    (toString(name, namelen), toString(value, valuelen)))
+  0
+
+proc onDataChunk(session: ptr Nghttp2Session; flags: uint8; streamId: int32;
+                 data: ptr uint8; len: csize_t; userData: pointer): cint
+                 {.cdecl, raises: [].} =
+  let s = sess(userData)
+  var acc = s.inData.mgetOrPut(streamId, @[]).addr
+  let start = acc[].len
+  acc[].setLen(start + len.int)
+  if len > 0: copyMem(acc[][start].addr, data, len.int)
+  0
+
+proc onFrameRecv(session: ptr Nghttp2Session; frame: ptr Nghttp2Frame;
+                 userData: pointer): cint {.cdecl, raises: [].} =
+  let s = sess(userData)
+  let id = frame.hd.stream_id
+  let endStream = (frame.hd.flags and NGHTTP2_FLAG_END_STREAM) != 0
+  case frame.hd.`type`
+  of NGHTTP2_HEADERS:
+    var hs: seq[Header]
+    discard s.inHeaders.pop(id, hs)
+    s.events.add H2Event(streamId: id, kind: evHeaders, headers: move hs,
+                         headersEndStream: endStream)
+  of NGHTTP2_DATA:
+    var d: seq[byte]
+    discard s.inData.pop(id, d)
+    s.events.add H2Event(streamId: id, kind: evData, data: move d,
+                         dataEndStream: endStream)
+  else: discard
+  0
+
+proc onStreamClose(session: ptr Nghttp2Session; streamId: int32;
+                   errorCode: uint32; userData: pointer): cint {.cdecl, raises: [].} =
+  let s = sess(userData)
+  s.inHeaders.del(streamId)
+  s.inData.del(streamId)
+  s.outs.del(streamId)
+  s.events.add H2Event(streamId: streamId, kind: evStreamClosed, errorCode: errorCode)
+  0
+
+proc withNva(hs: openArray[Header]; body: proc (nva: ptr Nghttp2Nv; n: csize_t)) =
+  ## Builds an nghttp2_nv array that borrows from `hs` for the duration of `body`.
+  ## nghttp2 copies the names and values (NV_FLAG_NONE), so nothing outlives it.
+  var nva = newSeq[Nghttp2Nv](hs.len)
+  for i, (k, v) in hs:
+    nva[i] = Nghttp2Nv(
+      name: cast[ptr uint8](k.cstring), namelen: k.len.csize_t,
+      value: cast[ptr uint8](v.cstring), valuelen: v.len.csize_t,
+      flags: NGHTTP2_NV_FLAG_NONE)
+  body(if nva.len > 0: nva[0].addr else: nil, nva.len.csize_t)
+
+proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
+             length: csize_t; dataFlags: ptr uint32; source: ptr Nghttp2DataSource;
+             userData: pointer): Nghttp2Ssize {.cdecl, raises: [].} =
+  let o = cast[ptr OutStreamObj](source.`ptr`)
+  let avail = o.buf.len - o.pos
+  if avail == 0 and not o.eof:
+    o.deferred = true
+    return NGHTTP2_ERR_DEFERRED
+  let n = min(avail, length.int)
+  if n > 0:
+    copyMem(buf, o.buf[o.pos].addr, n)
+    o.pos += n
+    if o.pos == o.buf.len:          # drop what has been sent
+      o.buf.setLen(0)
+      o.pos = 0
+  if o.eof and o.buf.len == 0:
+    dataFlags[] = dataFlags[] or NGHTTP2_DATA_FLAG_EOF
+    if o.hasTrailers:
+      dataFlags[] = dataFlags[] or NGHTTP2_DATA_FLAG_NO_END_STREAM
+      var rv: cint
+      try:
+        withNva(o.trailers, proc (nva: ptr Nghttp2Nv; k: csize_t) =
+          rv = nghttp2_submit_trailer(session, streamId, nva, k))
+      except Exception:
+        return NGHTTP2_ERR_CALLBACK_FAILURE
+      if rv != 0:
+        return NGHTTP2_ERR_CALLBACK_FAILURE
+  n
+
+# ---------------------------------------------------------------- public API
+
+proc newSession(server: bool): H2Session =
+  result = H2Session()
+  var cbs: ptr Nghttp2SessionCallbacks
+  if nghttp2_session_callbacks_new(cbs.addr) != 0:
+    raise newException(H2Error, "nghttp2_session_callbacks_new failed")
+  nghttp2_session_callbacks_set_on_begin_headers_callback(cbs, onBeginHeaders)
+  nghttp2_session_callbacks_set_on_header_callback(cbs, onHeader)
+  nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, onFrameRecv)
+  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, onDataChunk)
+  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, onStreamClose)
+  let ud = cast[pointer](result[].addr)
+  let rv =
+    if server: nghttp2_session_server_new(result.raw.addr, cbs, ud)
+    else: nghttp2_session_client_new(result.raw.addr, cbs, ud)
+  nghttp2_session_callbacks_del(cbs)
+  if rv != 0: raiseH2(rv, "session_new")
+  let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, nil, 0)
+  if rs != 0: raiseH2(rs, "submit_settings")
+
+proc newClientSession*(): H2Session = newSession(false)
+proc newServerSession*(): H2Session = newSession(true)
+
+proc recv*(s: H2Session; data: openArray[byte]) =
+  ## Feeds bytes read from the transport. Raises H2Error on a fatal
+  ## connection error (the caller should then send `takeOutput` and close).
+  if data.len == 0: return
+  let rv = nghttp2_session_mem_recv2(s.raw, data[0].unsafeAddr, data.len.csize_t)
+  if rv < 0: raiseH2(rv, "mem_recv")
+
+proc takeOutput*(s: H2Session): seq[byte] =
+  ## Everything nghttp2 wants to transmit right now.
+  while true:
+    var p: ptr uint8
+    let n = nghttp2_session_mem_send2(s.raw, p.addr)
+    if n < 0: raiseH2(n, "mem_send")
+    if n == 0: break
+    let start = result.len
+    result.setLen(start + n)
+    copyMem(result[start].addr, p, n)
+
+proc takeEvents*(s: H2Session): seq[H2Event] =
+  result = move s.events
+  s.events = @[]
+
+proc wantRead*(s: H2Session): bool = nghttp2_session_want_read(s.raw) != 0
+proc wantWrite*(s: H2Session): bool = nghttp2_session_want_write(s.raw) != 0
+
+proc provider(o: OutStream): Nghttp2DataProvider2 =
+  result.source.`ptr` = cast[pointer](o[].addr)
+  result.read_callback = readOut
+
+proc submitRequest*(s: H2Session; headers: openArray[Header];
+                    endStream = false): int32 =
+  ## Opens a stream. With `endStream = false` the body follows via `sendData`.
+  var o: OutStream
+  var prd: Nghttp2DataProvider2
+  if not endStream:
+    o = OutStream()
+    prd = provider(o)
+  var id: int32
+  withNva(headers, proc (nva: ptr Nghttp2Nv; n: csize_t) =
+    id = nghttp2_submit_request2(s.raw, nil, nva, n,
+                                 if endStream: nil else: prd.addr, nil))
+  if id < 0: raiseH2(id, "submit_request")
+  if o != nil: s.outs[id] = o
+  id
+
+proc submitResponse*(s: H2Session; streamId: int32; headers: openArray[Header];
+                     endStream = false) =
+  var o: OutStream
+  var prd: Nghttp2DataProvider2
+  if not endStream:
+    o = OutStream()
+    prd = provider(o)
+    s.outs[streamId] = o
+  var rv: cint
+  withNva(headers, proc (nva: ptr Nghttp2Nv; n: csize_t) =
+    rv = nghttp2_submit_response2(s.raw, streamId, nva, n,
+                                  if endStream: nil else: prd.addr))
+  if rv != 0:
+    s.outs.del(streamId)
+    raiseH2(rv, "submit_response")
+
+proc outStream(s: H2Session; streamId: int32): OutStream =
+  result = s.outs.getOrDefault(streamId)
+  if result == nil:
+    raise newException(H2Error, "stream " & $streamId & " has no open body")
+  if result.eof:
+    raise newException(H2Error, "stream " & $streamId & " body already ended")
+
+proc wake(s: H2Session; streamId: int32; o: OutStream) =
+  if o.deferred:
+    o.deferred = false
+    discard nghttp2_session_resume_data(s.raw, streamId)
+
+proc sendData*(s: H2Session; streamId: int32; data: openArray[byte];
+               endStream = false) =
+  ## Queues body bytes; nghttp2 frames them subject to flow control.
+  let o = s.outStream(streamId)
+  if data.len > 0:
+    let start = o.buf.len
+    o.buf.setLen(start + data.len)
+    copyMem(o.buf[start].addr, data[0].unsafeAddr, data.len)
+  if endStream: o.eof = true
+  s.wake(streamId, o)
+
+proc sendTrailers*(s: H2Session; streamId: int32; trailers: openArray[Header]) =
+  ## Ends the body and closes the stream with a trailing HEADERS block.
+  let o = s.outStream(streamId)
+  o.trailers = @trailers
+  o.hasTrailers = true
+  o.eof = true
+  s.wake(streamId, o)
+
+proc resetStream*(s: H2Session; streamId: int32; errorCode = NGHTTP2_CANCEL) =
+  let rv = nghttp2_submit_rst_stream(s.raw, NGHTTP2_FLAG_NONE, streamId, errorCode)
+  if rv != 0: raiseH2(rv, "submit_rst_stream")
+
+proc goAway*(s: H2Session; errorCode = NGHTTP2_NO_ERROR) =
+  let last = nghttp2_session_get_last_proc_stream_id(s.raw)
+  let rv = nghttp2_submit_goaway(s.raw, NGHTTP2_FLAG_NONE, last, errorCode, nil, 0)
+  if rv != 0: raiseH2(rv, "submit_goaway")
