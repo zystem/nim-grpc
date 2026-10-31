@@ -56,7 +56,7 @@ type
     failure: string    ## first error seen inside a callback
   H2Session* = ref H2SessionObj
 
-proc `=destroy`*(s: H2SessionObj) =
+proc `=destroy`*(s: H2SessionObj) {.raises: [].} =
   if s.raw != nil:
     nghttp2_session_del(s.raw)
   `=destroy`(s.events.addr[])
@@ -133,16 +133,20 @@ proc onStreamClose(session: ptr Nghttp2Session; streamId: int32;
   s.events.add H2Event(streamId: streamId, kind: evStreamClosed, errorCode: errorCode)
   0
 
-proc withNva(hs: openArray[Header]; body: proc (nva: ptr Nghttp2Nv; n: csize_t)) =
-  ## Builds an nghttp2_nv array that borrows from `hs` for the duration of `body`.
-  ## nghttp2 copies the names and values (NV_FLAG_NONE), so nothing outlives it.
-  var nva = newSeq[Nghttp2Nv](hs.len)
+proc buildNva(hs: openArray[Header]): seq[Nghttp2Nv] =
+  ## An nghttp2_nv array that borrows from `hs`; it must not outlive `hs`.
+  ## nghttp2 copies names and values on submit (NV_FLAG_NONE).
+  result = newSeq[Nghttp2Nv](hs.len)
   for i, (k, v) in hs:
-    nva[i] = Nghttp2Nv(
+    result[i] = Nghttp2Nv(
       name: cast[ptr uint8](k.cstring), namelen: k.len.csize_t,
       value: cast[ptr uint8](v.cstring), valuelen: v.len.csize_t,
       flags: NGHTTP2_NV_FLAG_NONE)
-  body(if nva.len > 0: nva[0].addr else: nil, nva.len.csize_t)
+
+template nvaPtr(nva: seq[Nghttp2Nv]): ptr Nghttp2Nv =
+  (if nva.len > 0: nva[0].unsafeAddr else: nil)
+
+template nvaLen(nva: seq[Nghttp2Nv]): csize_t = nva.len.csize_t
 
 proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
              length: csize_t; dataFlags: ptr uint32; source: ptr Nghttp2DataSource;
@@ -163,13 +167,8 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
     dataFlags[] = dataFlags[] or NGHTTP2_DATA_FLAG_EOF
     if o.hasTrailers:
       dataFlags[] = dataFlags[] or NGHTTP2_DATA_FLAG_NO_END_STREAM
-      var rv: cint
-      try:
-        withNva(o.trailers, proc (nva: ptr Nghttp2Nv; k: csize_t) =
-          rv = nghttp2_submit_trailer(session, streamId, nva, k))
-      except Exception:
-        return NGHTTP2_ERR_CALLBACK_FAILURE
-      if rv != 0:
+      let nva = buildNva(o.trailers)
+      if nghttp2_submit_trailer(session, streamId, nvaPtr(nva), nvaLen(nva)) != 0:
         return NGHTTP2_ERR_CALLBACK_FAILURE
   n
 
@@ -234,10 +233,9 @@ proc submitRequest*(s: H2Session; headers: openArray[Header];
   if not endStream:
     o = OutStream()
     prd = provider(o)
-  var id: int32
-  withNva(headers, proc (nva: ptr Nghttp2Nv; n: csize_t) =
-    id = nghttp2_submit_request2(s.raw, nil, nva, n,
-                                 if endStream: nil else: prd.addr, nil))
+  let nva = buildNva(headers)
+  let id = nghttp2_submit_request2(s.raw, nil, nvaPtr(nva), nvaLen(nva),
+                                   if endStream: nil else: prd.addr, nil)
   if id < 0: raiseH2(id, "submit_request")
   if o != nil: s.outs[id] = o
   id
@@ -250,10 +248,9 @@ proc submitResponse*(s: H2Session; streamId: int32; headers: openArray[Header];
     o = OutStream()
     prd = provider(o)
     s.outs[streamId] = o
-  var rv: cint
-  withNva(headers, proc (nva: ptr Nghttp2Nv; n: csize_t) =
-    rv = nghttp2_submit_response2(s.raw, streamId, nva, n,
-                                  if endStream: nil else: prd.addr))
+  let nva = buildNva(headers)
+  let rv = nghttp2_submit_response2(s.raw, streamId, nvaPtr(nva), nvaLen(nva),
+                                    if endStream: nil else: prd.addr)
   if rv != 0:
     s.outs.del(streamId)
     raiseH2(rv, "submit_response")

@@ -2,3 +2,5 @@ nimcache/
 *.exe
 tests/*
 !tests/*.nim
+tools/*
+!tools/*.nim

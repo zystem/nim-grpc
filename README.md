@@ -2,7 +2,8 @@
 
 gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
-**Status:** early. The HTTP/2 layer works and is tested; the gRPC layer is next.
+**Status:** early. HTTP/2 works over TCP (blocking adapter) and passes 134 of 146
+h2spec tests (see [docs/h2spec.md](docs/h2spec.md)); the gRPC layer is next.
 
 ## Design
 
@@ -10,8 +11,9 @@ gRPC for Nim on top of [nghttp2](https://nghttp2.org).
   with `recv`, bytes to transmit come out of `takeOutput`, and stream events come
   out of `takeEvents`. The core never touches a socket, so the same code runs
   under blocking threads, chronos, or a test that pipes two sessions together.
-- **Adapters on top** (planned): a blocking adapter (a reader thread per
-  connection, calls block on their stream) and a chronos adapter. TLS with ALPN
+- **Adapters on top.** `grpc/h2/blocking`: a reader and a writer thread per
+  connection, the connection lock is never held during socket I/O, callers
+  block on their own stream. A chronos adapter is planned. TLS with ALPN
   `h2` lives in the adapters.
 - **ORC-safe FFI.** nghttp2 only ever sees raw `ptr` to objects the session owns;
   callbacks are `raises: []` and never let an exception reach C.
@@ -34,12 +36,13 @@ A different prefix is passed with `-d:nghttp2Prefix=/path`.
 ```sh
 nimble test   # unit tests
 nimble asan   # the same under AddressSanitizer/LeakSanitizer
+nimble tsan   # the same under ThreadSanitizer
 ```
 
 ## Roadmap
 
 1. HTTP/2 session over nghttp2 — done
-2. Blocking adapter over TCP; h2spec conformance
+2. Blocking adapter over TCP; h2spec conformance — done
 3. gRPC unary calls: message framing, `grpc-timeout`, status in trailers,
    metadata; interop tests against grpc-go
 4. Streaming calls (client, server, bidi)

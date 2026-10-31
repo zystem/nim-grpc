@@ -6,10 +6,19 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 
-task test, "Run the unit tests":
-  exec "nim c -r --hints:off tests/th2session.nim"
+const tests = ["tests/th2session.nim", "tests/tblocking.nim"]
 
-task asan, "Run the unit tests under AddressSanitizer/LeakSanitizer":
-  exec "nim c -r --hints:off -d:useMalloc --debugger:native " &
-       "--passC:-fsanitize=address --passL:-fsanitize=address " &
-       "tests/th2session.nim"
+proc runAll(flags: string) =
+  for t in tests:
+    exec "nim c -r --hints:off " & flags & " " & t
+
+task test, "Run the unit tests":
+  runAll("")
+
+task asan, "Run the tests under AddressSanitizer/LeakSanitizer":
+  runAll("-d:useMalloc --debugger:native " &
+         "--passC:-fsanitize=address --passL:-fsanitize=address")
+
+task tsan, "Run the tests under ThreadSanitizer":
+  runAll("-d:useMalloc --debugger:native " &
+         "--passC:-fsanitize=thread --passL:-fsanitize=thread")
