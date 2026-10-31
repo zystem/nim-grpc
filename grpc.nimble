@@ -3,11 +3,13 @@ author        = "zystem"
 description   = "gRPC for Nim on top of nghttp2"
 license       = "MIT"
 srcDir        = "src"
+bin           = @["protoc_gen_nim"]
+installExt    = @["nim", "c"]
 
 requires "nim >= 2.2.12", "bearssl >= 0.3.1"
 
 const tests = ["tests/th2session.nim", "tests/tblocking.nim", "tests/tgrpc.nim",
-               "tests/ttls.nim"]
+               "tests/ttls.nim", "tests/tcodec.nim"]
 
 proc runAll(flags, tag: string) =
   # A separate nimcache per flag set: Nim reuses C objects across --passC changes.

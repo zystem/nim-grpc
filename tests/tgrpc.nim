@@ -3,6 +3,7 @@
 import std/[unittest, strutils]
 import grpc, grpc/wire
 import ./interop/interop
+import ./gen/grpc/testing/test_pb
 
 suite "wire":
   test "message framing round trip":
@@ -61,11 +62,62 @@ suite "unary interop, Nim client and Nim server":
     test name:
       ch.runCase(name)
 
-  test "a handler's unexpected exception becomes UNKNOWN":
+  test "an undecodable request is INTERNAL":
     var code = scOk
     try:
       discard ch.unaryCall("/grpc.testing.TestService/UnaryCall",
-                           @[0xff'u8, 0xff, 0xff])   # undecodable request
+                           @[0xff'u8, 0xff, 0xff])
     except GrpcError as e:
       code = e.code
-    check code == scUnknown
+    check code == scInternal
+
+proc abortingInput(ctx: var ServerContext;
+                   input: var ServerReader[StreamingInputCallRequest]):
+                   StreamingInputCallResponse {.nimcall, gcsafe, raises: [CatchableError].} =
+  var req: StreamingInputCallRequest
+  discard input.recv(req)
+  raise newGrpcError(scAborted, "typed handler gave up")
+
+proc failing(ctx: var ServerContext; req: seq[byte]): seq[byte]
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  raise newException(ValueError, "not a gRPC error")
+
+suite "handler errors":
+  test "an unexpected exception becomes UNKNOWN and the server keeps going":
+    let srv = newGrpcServer()
+    srv.addUnary("/t.T/Fail", failing)
+    srv.start()
+    let ch = dial("127.0.0.1", srv.port)
+    for i in 0 ..< 50:      # many times on the same workers
+      var code = scOk
+      var msg = ""
+      try:
+        discard ch.unaryCall("/t.T/Fail", @[])
+      except GrpcError as e:
+        code = e.code
+        msg = e.msg
+      check code == scUnknown
+      check msg == "not a gRPC error"
+    ch.close()
+    srv.stop()
+
+  test "a typed streaming handler that raises, many times on the same workers":
+    # Regression: the call through the generic handler type once lost its
+    # error check, and the next raise on that worker died with OverflowDefect.
+    let srv = newGrpcServer()
+    srv.registerTestService(TestServiceHandlers(streamingInputCall: abortingInput))
+    srv.start()
+    let ch = dial("127.0.0.1", srv.port)
+    let svc = newTestServiceClient(ch)
+    for i in 0 ..< 50:
+      var call = svc.streamingInputCall(timeoutMs = 5000)
+      call.send StreamingInputCallRequest()
+      var code = scOk
+      try:
+        discard call.closeAndRecv()
+      except GrpcError as e:
+        code = e.code
+      call.close()
+      check code == scAborted
+    ch.close()
+    srv.stop()

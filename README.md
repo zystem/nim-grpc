@@ -5,9 +5,45 @@ gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 **Status:** early. Unary and streaming calls (client-, server- and
 bidirectional) work, client and server, over plaintext HTTP/2, TLS and mutual
 TLS. 14 interop cases pass against grpc-go in both directions in each mode
-([docs/interop.md](docs/interop.md)). The HTTP/2 layer passes 135 of 146 h2spec
-tests ([docs/h2spec.md](docs/h2spec.md)). Code generation from `.proto` is
-next.
+([docs/interop.md](docs/interop.md)), with the Nim side written against code
+generated from the official interop protos. The HTTP/2 layer passes 135 of 146
+h2spec tests ([docs/h2spec.md](docs/h2spec.md)).
+
+### Code generation
+
+`protoc-gen-nim` (in this package) turns `.proto` files into typed messages,
+clients and server handler sets:
+
+```sh
+nim c -d:release src/protoc_gen_nim.nim
+protoc --plugin=protoc-gen-nim=src/protoc_gen_nim --nim_out=gen -Iproto helloworld.proto
+```
+
+```nim
+import grpc, gen/helloworld_pb
+
+proc sayHello(ctx: var ServerContext; req: HelloRequest): HelloReply {.nimcall, gcsafe.} =
+  HelloReply(message: "Hello, " & req.name)
+
+let srv = newGrpcServer(port = 50051)
+srv.registerGreeter(GreeterHandlers(sayHello: sayHello))   # unset methods: UNIMPLEMENTED
+srv.start()
+
+let greeter = newGreeterClient(dial("127.0.0.1", 50051))
+echo greeter.sayHello(HelloRequest(name: "Nim"), timeoutMs = 1000).message
+```
+
+Streaming methods get `ClientReader` / `ClientWriter` / `ClientBidi` on the
+client side and `ServerWriter` / `ServerReader` / `ServerBidi` in handlers.
+The type mapping (open enums, `Option` for explicit presence, `ref` for
+recursive fields, `Table` for maps) is documented at the top of
+[src/protoc_gen_nim.nim](src/protoc_gen_nim.nim). The codec is checked against
+protoc on fixtures covering every scalar type, packed and unpacked repeats,
+maps, oneofs, optional, recursion and proto2 (`tests/tcodec.nim`).
+
+### Untyped API
+
+The same calls without generated code, on raw message bytes:
 
 ```nim
 import grpc
@@ -109,7 +145,7 @@ nimble tsan   # the same under ThreadSanitizer
 4. Streaming calls (client, server, bidi) — done
 5. TLS with ALPN `h2`, mTLS — done
 6. chronos adapter
-7. Code generation from `.proto`
+7. Code generation from `.proto` — done
 8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
 
 ## Footprint

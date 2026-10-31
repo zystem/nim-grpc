@@ -1,0 +1,36 @@
+scalars {
+  f_double: -1.5e300
+  f_float: 3.25
+  f_int32: -42
+  f_int64: -9007199254740993
+  f_uint32: 4294967295
+  f_uint64: 18446744073709551615
+  f_sint32: -2147483648
+  f_sint64: -9223372036854775808
+  f_fixed32: 4000000000
+  f_fixed64: 18000000000000000000
+  f_sfixed32: -7
+  f_sfixed64: -8
+  f_bool: true
+  f_string: "héllo ☺ \x00 end"
+  f_bytes: "\x00\xff\x10"
+  f_color: BLUE
+}
+packed_ints: [1, -1, 300, 0, 2147483647]
+unpacked_ints: [5, -5]
+packed_sints: [-1, 1, -9223372036854775808]
+packed_doubles: [0.5, -0.0, 1e-300]
+strings: ["a", "", "ccc"]
+inners { x: 1 mood: HAPPY }
+inners { }
+colors: [RED, BLUE, 7]
+str_to_int { key: "one" value: 1 }
+str_to_int { key: "minus" value: -1 }
+int_to_inner { key: -5 value { x: 9 } }
+bool_to_str { key: true value: "yes" }
+choice_inner { x: 77 }
+maybe_int: 0
+inner { mood: HAPPY }
+tree { name: "root" child { name: "c" child { name: "cc" } } children { name: "k1" } children { name: "k2" children { name: "k2a" } } }
+type: 3
+field_with_large_number: 1

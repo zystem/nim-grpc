@@ -1,20 +1,19 @@
-## Interop peer in Nim: a grpc.testing.TestService server (unary methods) and
-## a client running the unary interop cases from grpc/grpc
-## doc/interop-test-descriptions.md against any server.
+## Interop peer in Nim, on code generated from grpc/testing/test.proto
+## (tests/gen): a grpc.testing.TestService server and a client running the
+## interop cases from grpc/grpc doc/interop-test-descriptions.md.
 ##
-##   interop server 10000
-##   interop client 127.0.0.1 10000 [case,case,...]
+##   interop server PORT [--tls|--mtls] [--certs=DIR]
+##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR]
 
-import std/[os, strutils, times]
+import std/[os, strutils]
 import grpc
-import ./testpb
+import ../gen/grpc/testing/test_pb
 
 const
-  svc = "/grpc.testing.TestService/"
   initialKey = "x-grpc-test-echo-initial"
   trailingKey = "x-grpc-test-echo-trailing-bin"
 
-proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
+proc zeros(n: int): Payload = Payload(body: newSeq[byte](n))
 
 # ---------------------------------------------------------------- server
 
@@ -24,56 +23,54 @@ proc echoMetadata(ctx: var ServerContext) =
   let b = ctx.metadata.get(trailingKey)
   if b.len > 0: ctx.trailers.add (trailingKey, b)
 
-proc emptyCall(ctx: var ServerContext; req: seq[byte]): seq[byte]
-    {.nimcall, gcsafe, raises: [CatchableError].} =
-  @[]
+proc echoStatus(s: EchoStatus) =
+  if s.code != 0: raise newGrpcError(toStatusCode(s.code), s.message)
 
-proc unaryCall(ctx: var ServerContext; req: seq[byte]): seq[byte]
+proc emptyCall(ctx: var ServerContext; req: Empty): Empty
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  Empty()
+
+proc unaryCall(ctx: var ServerContext; req: SimpleRequest): SimpleResponse
     {.nimcall, gcsafe, raises: [CatchableError].} =
   ctx.echoMetadata()
-  let r = decodeSimpleRequest(req)
-  if r.hasResponseStatus and r.responseStatus.code != 0:
-    raise newGrpcError(toStatusCode(r.responseStatus.code), r.responseStatus.message)
-  SimpleResponse(payload: Payload(body: newSeq[byte](r.responseSize))).encode
+  echoStatus(req.responseStatus)
+  SimpleResponse(payload: zeros(req.responseSize))
 
-proc streamingOutputCall(ctx: var ServerContext; call: var ServerCall)
+proc streamingOutputCall(ctx: var ServerContext; req: StreamingOutputCallRequest;
+                         output: var ServerWriter[StreamingOutputCallResponse])
     {.nimcall, gcsafe, raises: [CatchableError].} =
-  var raw: seq[byte]
-  if not call.recv(raw): raise newGrpcError(scInvalidArgument, "no request")
-  let req = decodeStreamingOutputCallRequest(raw)
   for p in req.responseParameters:
     if p.intervalUs > 0: sleep(p.intervalUs div 1000)
-    call.send(StreamingOutputCallResponse(
-      payload: Payload(body: newSeq[byte](p.size))).encode)
+    output.send StreamingOutputCallResponse(payload: zeros(p.size))
 
-proc streamingInputCall(ctx: var ServerContext; call: var ServerCall)
+proc streamingInputCall(ctx: var ServerContext;
+                        input: var ServerReader[StreamingInputCallRequest]):
+                        StreamingInputCallResponse
     {.nimcall, gcsafe, raises: [CatchableError].} =
-  var raw: seq[byte]
+  var req: StreamingInputCallRequest
   var total = 0
-  while call.recv(raw):
-    total += decodeStreamingInputCallRequest(raw).payload.body.len
-  call.send(StreamingInputCallResponse(aggregatedPayloadSize: total.int32).encode)
+  while input.recv(req): total += req.payload.body.len
+  StreamingInputCallResponse(aggregatedPayloadSize: total.int32)
 
-proc fullDuplexCall(ctx: var ServerContext; call: var ServerCall)
+proc fullDuplexCall(ctx: var ServerContext;
+                    call: var ServerBidi[StreamingOutputCallRequest,
+                                         StreamingOutputCallResponse])
     {.nimcall, gcsafe, raises: [CatchableError].} =
   ctx.echoMetadata()
-  var raw: seq[byte]
-  while call.recv(raw):
-    let req = decodeStreamingOutputCallRequest(raw)
-    if req.hasResponseStatus and req.responseStatus.code != 0:
-      raise newGrpcError(toStatusCode(req.responseStatus.code), req.responseStatus.message)
+  var req: StreamingOutputCallRequest
+  while call.recv(req):
+    echoStatus(req.responseStatus)
     for p in req.responseParameters:
       if p.intervalUs > 0: sleep(p.intervalUs div 1000)
-      call.send(StreamingOutputCallResponse(
-        payload: Payload(body: newSeq[byte](p.size))).encode)
+      call.send StreamingOutputCallResponse(payload: zeros(p.size))
 
 proc newTestServer*(port = 0; tls: TlsConfig = nil): GrpcServer =
   result = newGrpcServer(port, tls = tls)
-  result.addUnary(svc & "EmptyCall", emptyCall)
-  result.addUnary(svc & "UnaryCall", unaryCall)
-  result.addStreaming(svc & "StreamingOutputCall", streamingOutputCall)
-  result.addStreaming(svc & "StreamingInputCall", streamingInputCall)
-  result.addStreaming(svc & "FullDuplexCall", fullDuplexCall)
+  result.registerTestService(TestServiceHandlers(
+    emptyCall: emptyCall, unaryCall: unaryCall,
+    streamingOutputCall: streamingOutputCall,
+    streamingInputCall: streamingInputCall,
+    fullDuplexCall: fullDuplexCall))
 
 # ---------------------------------------------------------------- client
 
@@ -89,18 +86,13 @@ proc expectCode(f: proc () {.raises: [CatchableError].}; want: StatusCode;
     return
   raise newException(ValueError, "call succeeded, want " & $want)
 
-proc outReq(respSizes: openArray[int32]; payload = 0;
-            status = EchoStatus(); hasStatus = false): seq[byte] =
-  var r = StreamingOutputCallRequest(payload: Payload(body: newSeq[byte](payload)),
-                                     responseStatus: status, hasResponseStatus: hasStatus)
-  for n in respSizes: r.responseParameters.add ResponseParameters(size: n)
-  r.encode
-
 proc check(cond: bool; what: string) =
   if not cond: raise newException(ValueError, what)
 
-proc respSize(raw: seq[byte]): int =
-  decodeStreamingOutputCallResponse(raw).payload.body.len
+proc outReq(respSizes: openArray[int32]; payload = 0;
+            status = EchoStatus()): StreamingOutputCallRequest =
+  result = StreamingOutputCallRequest(payload: zeros(payload), responseStatus: status)
+  for n in respSizes: result.responseParameters.add ResponseParameters(size: n)
 
 const
   reqSizes = [27182, 8, 1828, 45904]
@@ -108,107 +100,96 @@ const
 
 proc runCase*(ch: GrpcChannel; name: string) =
   ## Raises on failure.
-  var raw: seq[byte]
+  let svc = newTestServiceClient(ch)
+  var resp: StreamingOutputCallResponse
   case name
   of "empty_unary":
-    let r = ch.unaryCall(svc & "EmptyCall", @[], timeoutMs = 10_000)
-    check r.message.len == 0, "non-empty reply"
+    discard svc.emptyCall(Empty(), timeoutMs = 10_000)
   of "large_unary":
-    let req = SimpleRequest(responseSize: 314159,
-                            payload: Payload(body: newSeq[byte](271828)))
-    let r = ch.unaryCall(svc & "UnaryCall", req.encode, timeoutMs = 10_000)
-    let n = decodeSimpleResponse(r.message).payload.body.len
-    check n == 314159, "payload " & $n & " bytes"
+    let r = svc.unaryCall(SimpleRequest(responseSize: 314159, payload: zeros(271828)),
+                          timeoutMs = 10_000)
+    check r.payload.body.len == 314159, "payload " & $r.payload.body.len & " bytes"
   of "status_code_and_message", "special_status_message":
     let msg = if name == "status_code_and_message": "test status message"
               else: "\t\ntest with whitespace\r\nand Unicode BMP ☺ and non-BMP 😈\t\n"
-    let req = SimpleRequest(hasResponseStatus: true,
-                            responseStatus: EchoStatus(code: 2, message: msg))
-    expectCode(proc () = discard ch.unaryCall(svc & "UnaryCall", req.encode),
+    let st = EchoStatus(code: 2, message: msg)
+    expectCode(proc () = discard svc.unaryCall(SimpleRequest(responseStatus: st)),
                scUnknown, msg)
     if name == "status_code_and_message":
       expectCode(proc () =
-        var call = ch.newCall(svc & "FullDuplexCall", timeoutMs = 10_000)
+        var call = svc.fullDuplexCall(timeoutMs = 10_000)
         defer: call.close()
-        call.send(outReq([], status = EchoStatus(code: 2, message: msg), hasStatus = true))
+        call.send outReq([], status = st)
         call.closeSend()
-        var m: seq[byte]
+        var m: StreamingOutputCallResponse
         while call.recv(m): discard, scUnknown, msg)
   of "unimplemented_method":
-    expectCode(proc () = discard ch.unaryCall(svc & "UnimplementedCall", @[]),
-               scUnimplemented)
+    expectCode(proc () = discard svc.unimplementedCall(Empty()), scUnimplemented)
   of "unimplemented_service":
-    expectCode(proc () = discard ch.unaryCall(
-                 "/grpc.testing.UnimplementedService/UnimplementedCall", @[]),
-               scUnimplemented)
+    let other = newUnimplementedServiceClient(ch)
+    expectCode(proc () = discard other.unimplementedCall(Empty()), scUnimplemented)
   of "custom_metadata":
     let bin = "\xab\xab\xab"
     let md = @[(initialKey, "test_initial_metadata_value"), (trailingKey, bin)]
-    let req = SimpleRequest(responseSize: 314159,
-                            payload: Payload(body: newSeq[byte](271828)))
-    let r = ch.unaryCall(svc & "UnaryCall", req.encode, md, timeoutMs = 10_000)
+    let r = svc.unaryCallWithMetadata(
+      SimpleRequest(responseSize: 314159, payload: zeros(271828)), md, timeoutMs = 10_000)
+    check r.message.payload.body.len == 314159, "unary payload size"
     check r.headers.get(initialKey) == "test_initial_metadata_value",
           "unary initial metadata " & $r.headers
     check r.trailers.get(trailingKey) == bin, "unary trailing metadata " & $r.trailers
-    var call = ch.newCall(svc & "FullDuplexCall", md, timeoutMs = 10_000)
+    var call = svc.fullDuplexCall(md, timeoutMs = 10_000)
     defer: call.close()
-    call.send(outReq([314159'i32], payload = 271828))
+    call.send outReq([314159'i32], payload = 271828)
     call.closeSend()
-    check call.recv(raw), "no duplex response"
-    check raw.respSize == 314159, "duplex payload size"
-    check not call.recv(raw), "extra duplex response"
+    check call.recv(resp), "no duplex response"
+    check resp.payload.body.len == 314159, "duplex payload size"
+    check not call.recv(resp), "extra duplex response"
     check call.headers.get(initialKey) == "test_initial_metadata_value",
           "duplex initial metadata " & $call.headers
     check call.trailers.get(trailingKey) == bin, "duplex trailing metadata"
   of "client_streaming":
-    var call = ch.newCall(svc & "StreamingInputCall", timeoutMs = 10_000)
+    var call = svc.streamingInputCall(timeoutMs = 10_000)
     defer: call.close()
-    for n in reqSizes:
-      call.send(StreamingInputCallRequest(payload: Payload(body: newSeq[byte](n))).encode)
-    call.closeSend()
-    check call.recv(raw), "no response"
-    let total = decodeStreamingInputCallResponse(raw).aggregatedPayloadSize
+    for n in reqSizes: call.send StreamingInputCallRequest(payload: zeros(n))
+    let total = call.closeAndRecv().aggregatedPayloadSize
     check total == 74922, "aggregated " & $total
-    check not call.recv(raw), "extra response"
   of "server_streaming":
-    var call = ch.newCall(svc & "StreamingOutputCall", timeoutMs = 10_000)
+    var call = svc.streamingOutputCall(outReq(respSizes), timeoutMs = 10_000)
     defer: call.close()
-    call.send(outReq(respSizes))
-    call.closeSend()
     for n in respSizes:
-      check call.recv(raw), "stream ended early"
-      check raw.respSize == n, "size " & $raw.respSize & ", want " & $n
-    check not call.recv(raw), "extra response"
+      check call.recv(resp), "stream ended early"
+      check resp.payload.body.len == n, "size " & $resp.payload.body.len & ", want " & $n
+    check not call.recv(resp), "extra response"
   of "ping_pong":
-    var call = ch.newCall(svc & "FullDuplexCall", timeoutMs = 10_000)
+    var call = svc.fullDuplexCall(timeoutMs = 10_000)
     defer: call.close()
     for i in 0 ..< reqSizes.len:
-      call.send(outReq([respSizes[i]], payload = reqSizes[i]))
-      check call.recv(raw), "no response to request " & $i
-      check raw.respSize == respSizes[i], "size " & $raw.respSize
+      call.send outReq([respSizes[i]], payload = reqSizes[i])
+      check call.recv(resp), "no response to request " & $i
+      check resp.payload.body.len == respSizes[i], "size " & $resp.payload.body.len
     call.closeSend()
-    check not call.recv(raw), "extra response"
+    check not call.recv(resp), "extra response"
   of "empty_stream":
-    var call = ch.newCall(svc & "FullDuplexCall", timeoutMs = 10_000)
+    var call = svc.fullDuplexCall(timeoutMs = 10_000)
     defer: call.close()
     call.closeSend()
-    check not call.recv(raw), "response on an empty stream"
+    check not call.recv(resp), "response on an empty stream"
   of "cancel_after_begin":
-    var call = ch.newCall(svc & "StreamingInputCall", timeoutMs = 10_000)
+    var call = svc.streamingInputCall(timeoutMs = 10_000)
     call.cancel()
-    expectCode(proc () = discard call.recv(raw), scCancelled)
+    expectCode(proc () = discard call.closeAndRecv(), scCancelled)
   of "cancel_after_first_response":
-    var call = ch.newCall(svc & "FullDuplexCall", timeoutMs = 10_000)
-    call.send(outReq([31415'i32], payload = 27182))
-    check call.recv(raw), "no first response"
+    var call = svc.fullDuplexCall(timeoutMs = 10_000)
+    call.send outReq([31415'i32], payload = 27182)
+    check call.recv(resp), "no first response"
     call.cancel()
-    expectCode(proc () = discard call.recv(raw), scCancelled)
+    expectCode(proc () = discard call.recv(resp), scCancelled)
   of "timeout_on_sleeping_server":
-    var call = ch.newCall(svc & "FullDuplexCall", timeoutMs = 1)
+    var call = svc.fullDuplexCall(timeoutMs = 1)
     defer: call.close()
     expectCode(proc () =
-      call.send(outReq([], payload = 27182))
-      while call.recv(raw): discard, scDeadlineExceeded)
+      call.send outReq([], payload = 27182)
+      while call.recv(resp): discard, scDeadlineExceeded)
   else:
     raise newException(ValueError, "unknown case " & name)
 
@@ -234,8 +215,6 @@ proc runClient*(host: string; port: int; only: seq[string] = @[];
   ch.close()
 
 when isMainModule:
-  # interop server PORT [--tls|--mtls] [--certs=DIR]
-  # interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR]
   var pos: seq[string]
   var mode = ""
   var certs = currentSourcePath.parentDir.parentDir / "certs"
@@ -257,7 +236,7 @@ when isMainModule:
   else:
     let host = if pos.len >= 2: pos[1] else: "127.0.0.1"
     let port = if pos.len >= 3: parseInt(pos[2]) else: 10000
-    let only = if pos.len >= 4: pos[3].split(',') else: @[]
+    let only = if pos.len >= 4 and pos[3].len > 0: pos[3].split(',') else: @[]
     let tls = case mode
       of "tls": tlsClientConfig(pem"ca.pem")
       of "mtls": tlsClientConfig(pem"ca.pem", pem"client.pem", pem"client.key")

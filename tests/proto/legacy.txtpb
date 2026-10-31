@@ -1,0 +1,5 @@
+a: 0
+b: ""
+unpacked: [1, 2]
+packed: [3, 4]
+next { b: "inner" next { b: "deeper" } }

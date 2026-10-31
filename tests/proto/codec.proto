@@ -1,0 +1,66 @@
+// Covers every construct protoc-gen-nim maps; used by tests/tcodec.nim.
+syntax = "proto3";
+
+package codec.test;
+
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  RED = 1;
+  GREEN = 2;
+  BLUE = -3;
+}
+
+message Scalars {
+  double f_double = 1;
+  float f_float = 2;
+  int32 f_int32 = 3;
+  int64 f_int64 = 4;
+  uint32 f_uint32 = 5;
+  uint64 f_uint64 = 6;
+  sint32 f_sint32 = 7;
+  sint64 f_sint64 = 8;
+  fixed32 f_fixed32 = 9;
+  fixed64 f_fixed64 = 10;
+  sfixed32 f_sfixed32 = 11;
+  sfixed64 f_sfixed64 = 12;
+  bool f_bool = 13;
+  string f_string = 14;
+  bytes f_bytes = 15;
+  Color f_color = 16;
+}
+
+message Node {
+  string name = 1;
+  Node child = 2;            // recursive: generated as `ref Node`
+  repeated Node children = 3;
+}
+
+message Everything {
+  message Inner {
+    enum Mood { MOOD_UNSPECIFIED = 0; HAPPY = 1; }
+    int32 x = 1;
+    Mood mood = 2;
+  }
+  Scalars scalars = 1;
+  repeated int32 packed_ints = 2;
+  repeated int32 unpacked_ints = 3 [packed = false];
+  repeated sint64 packed_sints = 4;
+  repeated double packed_doubles = 5;
+  repeated string strings = 6;
+  repeated Inner inners = 7;
+  repeated Color colors = 8;
+  map<string, int32> str_to_int = 9;
+  map<int32, Inner> int_to_inner = 10;
+  map<bool, string> bool_to_str = 11;
+  oneof choice {
+    string choice_str = 12;
+    Inner choice_inner = 13;
+    int64 choice_int = 14;
+  }
+  optional int32 maybe_int = 15;
+  optional string maybe_str = 16;
+  Inner inner = 17;
+  Node tree = 18;
+  int32 type = 19;           // a Nim keyword
+  uint64 field_with_large_number = 536870911;
+}

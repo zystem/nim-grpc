@@ -39,11 +39,22 @@ type
   StreamingHandler* = proc (ctx: var ServerContext; call: var ServerCall)
     {.nimcall, gcsafe, raises: [CatchableError].}
 
+  RawUnaryHandler* = proc (ctx: var ServerContext; request: seq[byte];
+                           userData: pointer): seq[byte]
+    {.nimcall, gcsafe, raises: [CatchableError].}
+    ## Like UnaryHandler, plus the pointer given at registration (used by
+    ## generated code to reach the typed handler).
+
+  RawStreamingHandler* = proc (ctx: var ServerContext; call: var ServerCall;
+                               userData: pointer)
+    {.nimcall, gcsafe, raises: [CatchableError].}
+
   MethodKind = enum mkUnary, mkStreaming
   Method = object
+    userData: pointer
     case kind: MethodKind
-    of mkUnary: unary: UnaryHandler
-    of mkStreaming: streaming: StreamingHandler
+    of mkUnary: unary: RawUnaryHandler
+    of mkStreaming: streaming: RawStreamingHandler
 
   Registry = object
     methods: Table[string, Method]
@@ -180,10 +191,10 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
       var extra: seq[byte]
       if call.recv(extra):
         raise newGrpcError(scUnimplemented, "unary call with more than one request message")
-      let reply = m.unary(ctx, req)
+      let reply = m.unary(ctx, req, m.userData)
       call.send(reply)
     of mkStreaming:
-      m.streaming(ctx, call)
+      m.streaming(ctx, call, m.userData)
     call.finishCall(scOk, "", ctx.trailers)
   except GrpcError as e:
     call.finishCall(e.code, e.msg, ctx.trailers & e.trailers)
@@ -201,14 +212,30 @@ proc newGrpcServer*(port = 0; address = "127.0.0.1"; maxWorkers = 256;
   result.h2 = newStreamServer(handle, result.reg.addr, Port(port), address,
                               maxWorkers, tls)
 
+proc addUnaryRaw*(s: GrpcServer; path: string; handler: RawUnaryHandler;
+                  userData: pointer) =
+  doAssert not s.started, "methods must be registered before start"
+  s.reg.methods[path] = Method(kind: mkUnary, unary: handler, userData: userData)
+
+proc addStreamingRaw*(s: GrpcServer; path: string; handler: RawStreamingHandler;
+                      userData: pointer) =
+  doAssert not s.started, "methods must be registered before start"
+  s.reg.methods[path] = Method(kind: mkStreaming, streaming: handler, userData: userData)
+
+proc callUnary(ctx: var ServerContext; request: seq[byte]; userData: pointer): seq[byte]
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  cast[UnaryHandler](userData)(ctx, request)
+
+proc callStreaming(ctx: var ServerContext; call: var ServerCall; userData: pointer)
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  cast[StreamingHandler](userData)(ctx, call)
+
 proc addUnary*(s: GrpcServer; path: string; handler: UnaryHandler) =
   ## `path` is "/package.Service/Method".
-  doAssert not s.started, "methods must be registered before start"
-  s.reg.methods[path] = Method(kind: mkUnary, unary: handler)
+  s.addUnaryRaw(path, callUnary, cast[pointer](handler))
 
 proc addStreaming*(s: GrpcServer; path: string; handler: StreamingHandler) =
-  doAssert not s.started, "methods must be registered before start"
-  s.reg.methods[path] = Method(kind: mkStreaming, streaming: handler)
+  s.addStreamingRaw(path, callStreaming, cast[pointer](handler))
 
 proc port*(s: GrpcServer): int = s.h2.port.int
 

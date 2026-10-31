@@ -1,0 +1,12 @@
+// proto2: explicit presence everywhere, repeated scalars unpacked by default.
+syntax = "proto2";
+
+package codec.legacy;
+
+message Legacy {
+  optional int32 a = 1;
+  required string b = 2;
+  repeated int32 unpacked = 3;
+  repeated int32 packed = 4 [packed = true];
+  optional Legacy next = 5;
+}

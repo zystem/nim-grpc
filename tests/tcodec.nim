@@ -1,0 +1,158 @@
+## Generated Protobuf code against protoc.
+##
+## tests/proto/*.bin were encoded by protoc from the .txtpb fixtures. Each
+## is decoded here, checked field by field, re-encoded and decoded again. When
+## protoc is available (PROTOC, default `protoc` on PATH) the re-encoded bytes
+## must also decode, in protoc, to the same text as the original.
+
+import std/[unittest, os, osproc, strutils, options, tables, math]
+import grpc/protobuf
+import ./gen/[codec_pb, legacy_pb]
+
+const dir = currentSourcePath.parentDir / "proto"
+
+proc load(name: string): seq[byte] =
+  let s = readFile(dir / name)
+  result = newSeq[byte](s.len)
+  if s.len > 0: copyMem(result[0].addr, s[0].unsafeAddr, s.len)
+
+proc protoc(): string =
+  result = getEnv("PROTOC", findExe("protoc"))
+
+proc protocDecode(typ, file: string; data: seq[byte]): string =
+  ## protoc's text form of `data`; "" if protoc is missing.
+  let p = protoc()
+  if p.len == 0: return ""
+  let tmp = getTempDir() / "tcodec.bin"
+  var s = newString(data.len)
+  if data.len > 0: copyMem(s[0].addr, data[0].unsafeAddr, data.len)
+  writeFile(tmp, s)
+  let (outp, code) = execCmdEx(p & " --decode=" & typ & " -I" & dir.quoteShell &
+                               " " & file & " < " & tmp.quoteShell)
+  doAssert code == 0, outp
+  outp
+
+suite "proto3 codec":
+  let original = load("everything.bin")
+  let m = Everything.decode(original)
+
+  test "scalars, including extremes":
+    let s = m.scalars
+    check m.hasScalars
+    check s.fDouble == -1.5e300
+    check s.fFloat == 3.25'f32
+    check s.fInt32 == -42
+    check s.fInt64 == -9007199254740993'i64
+    check s.fUint32 == 4294967295'u32
+    check s.fUint64 == 18446744073709551615'u64
+    check s.fSint32 == low(int32)
+    check s.fSint64 == low(int64)
+    check s.fFixed32 == 4000000000'u32
+    check s.fFixed64 == 18000000000000000000'u64
+    check s.fSfixed32 == -7
+    check s.fSfixed64 == -8
+    check s.fBool
+    check s.fString == "héllo ☺ \x00 end"
+    check s.fBytes == @[0'u8, 0xff, 0x10]
+    check s.fColor == Color_BLUE
+    check int32(s.fColor) == -3
+
+  test "repeated, packed and not":
+    check m.packedInts == @[1'i32, -1, 300, 0, 2147483647]
+    check m.unpackedInts == @[5'i32, -5]
+    check m.packedSints == @[-1'i64, 1, low(int64)]
+    check m.packedDoubles.len == 3 and m.packedDoubles[0] == 0.5
+    check m.packedDoubles[1] == 0.0 and copySign(1.0, m.packedDoubles[1]) < 0
+    check m.strings == @["a", "", "ccc"]
+    check m.inners.len == 2 and m.inners[0].x == 1 and
+          m.inners[0].mood == Everything_Inner_Mood_HAPPY
+    check m.inners[1] == Everything_Inner()
+
+  test "open enums keep unknown values":
+    check m.colors == @[Color_RED, Color_BLUE, Color(7)]
+    check $Color(7) == "Color(7)"
+    check $Color_RED == "RED"
+
+  test "maps":
+    check m.strToInt == {"one": 1'i32, "minus": -1'i32}.toTable
+    check m.intToInner.len == 1 and m.intToInner[-5].x == 9
+    check m.boolToStr == {true: "yes"}.toTable
+
+  test "oneof, optional and keyword fields":
+    check m.hasChoiceInner and m.choiceInner.x == 77
+    check m.choiceStr.isNone and m.choiceInt.isNone
+    check m.maybeInt == some(0'i32)     # explicit presence keeps a set zero
+    check m.maybeStr.isNone
+    check m.hasInner and m.inner.mood == Everything_Inner_Mood_HAPPY
+    check m.`type` == 3
+    check m.fieldWithLargeNumber == 1
+
+  test "recursive messages":
+    check m.hasTree and m.tree.name == "root"
+    check m.tree.child != nil and m.tree.child.name == "c"
+    check m.tree.child.child != nil and m.tree.child.child.name == "cc"
+    check m.tree.child.child.child == nil
+    check m.tree.children.len == 2 and m.tree.children[1].children[0].name == "k2a"
+
+  test "round trip in Nim":
+    let again = Everything.decode(m.encode)
+    check again.encode == m.encode
+    check again.scalars == m.scalars
+    check again.strToInt == m.strToInt
+    check again.tree.child.child.name == "cc"
+
+  test "protoc decodes our encoding to the same message":
+    let a = protocDecode("codec.test.Everything", "codec.proto", original)
+    if a.len == 0:
+      skip()
+    else:
+      check protocDecode("codec.test.Everything", "codec.proto", m.encode) == a
+
+  test "a later oneof member clears the earlier one":
+    var w: PbWriter
+    w.putTag(12, wtLen); w.putString("first")
+    w.putTag(14, wtVarint); w.putVarint(9)
+    let d = Everything.decode(w.buf)
+    check d.choiceStr.isNone and d.choiceInt == some(9'i64)
+
+  test "malformed input raises ProtobufError":
+    for bad in [@[0x08'u8], @[0x0a'u8, 0x05, 1], @[0x0a'u8, 0xff, 0xff, 0xff, 0xff, 0x0f],
+                @[0x00'u8], @[0x0f'u8]]:
+      expect ProtobufError:
+        discard Everything.decode(bad)
+
+  test "unknown fields are skipped":
+    var w: PbWriter
+    w.putTag(1000, wtLen); w.putString("ignored")
+    w.putTag(1001, wt32); w.putFixed32(1)
+    w.putTag(19, wtVarint); w.putVarint(5)
+    check Everything.decode(w.buf).`type` == 5
+
+suite "proto2 codec":
+  let original = load("legacy.bin")
+  let m = Legacy.decode(original)
+
+  test "explicit presence and recursion":
+    check m.a == some(0'i32)
+    check m.b == some("")
+    check m.next != nil and m.next.b == some("inner")
+    check m.next.next != nil and m.next.next.b == some("deeper")
+    check m.next.next.a.isNone
+
+  test "repeated scalars: unpacked by default, packed on request":
+    check m.unpacked == @[1'i32, 2]
+    check m.packed == @[3'i32, 4]
+    let enc = m.encode
+    # field 3 unpacked: tag 0x18 per element; field 4 packed: one tag 0x22
+    var tags3, tags4 = 0
+    for i, b in enc:
+      if b == 0x18: inc tags3
+      if b == 0x22: inc tags4
+    check tags3 >= 2 and tags4 >= 1
+
+  test "protoc decodes our encoding to the same message":
+    let a = protocDecode("codec.legacy.Legacy", "legacy.proto", original)
+    if a.len == 0:
+      skip()
+    else:
+      check protocDecode("codec.legacy.Legacy", "legacy.proto", m.encode) == a

@@ -12,3 +12,5 @@ nimcache/
 !/tools/*.nim
 /nimcache/
 !/tools/*.sh
+!/tests/proto/
+!/tests/gen/
