@@ -163,6 +163,13 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
     if o.pos == o.buf.len:          # drop what has been sent
       o.buf.setLen(0)
       o.pos = 0
+    elif o.pos >= 65536 and o.pos * 2 >= o.buf.len:
+      # A producer that keeps the buffer non-empty would otherwise grow it
+      # forever; shift the unsent tail to the front.
+      let rest = o.buf.len - o.pos
+      moveMem(o.buf[0].addr, o.buf[o.pos].addr, rest)
+      o.buf.setLen(rest)
+      o.pos = 0
   if o.eof and o.buf.len == 0:
     dataFlags[] = dataFlags[] or NGHTTP2_DATA_FLAG_EOF
     if o.hasTrailers:
@@ -285,6 +292,11 @@ proc sendTrailers*(s: H2Session; streamId: int32; trailers: openArray[Header]) =
   o.hasTrailers = true
   o.eof = true
   s.wake(streamId, o)
+
+proc buffered*(s: H2Session; streamId: int32): int =
+  ## Body bytes queued on `streamId` that nghttp2 has not framed yet.
+  let o = s.outs.getOrDefault(streamId)
+  if o != nil: o.buf.len - o.pos else: 0
 
 proc resetStream*(s: H2Session; streamId: int32; errorCode = NGHTTP2_CANCEL) =
   let rv = nghttp2_submit_rst_stream(s.raw, NGHTTP2_FLAG_NONE, streamId, errorCode)

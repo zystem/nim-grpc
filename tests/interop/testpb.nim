@@ -119,3 +119,69 @@ proc decodeSimpleResponse*(data: seq[byte]): SimpleResponse =
   for (f, w, r) in fields(data):
     if f == 1 and w == 2: result.payload = decodePayload(r[].getLen())
     else: r[].skip(w)
+
+# ---------------------------------------------------------------- streaming messages
+
+type
+  ResponseParameters* = object
+    size*: int32
+    intervalUs*: int32
+  StreamingOutputCallRequest* = object
+    responseParameters*: seq[ResponseParameters]
+    payload*: Payload
+    responseStatus*: EchoStatus
+    hasResponseStatus*: bool
+  StreamingOutputCallResponse* = object
+    payload*: Payload
+  StreamingInputCallRequest* = object
+    payload*: Payload
+  StreamingInputCallResponse* = object
+    aggregatedPayloadSize*: int32
+
+proc encode*(m: ResponseParameters): seq[byte] =
+  result.putInt(1, m.size)
+  result.putInt(2, m.intervalUs)
+
+proc decodeResponseParameters*(data: seq[byte]): ResponseParameters =
+  for (f, w, r) in fields(data):
+    if f == 1 and w == 0: result.size = cast[int32](r[].getVarint())
+    elif f == 2 and w == 0: result.intervalUs = cast[int32](r[].getVarint())
+    else: r[].skip(w)
+
+proc encode*(m: StreamingOutputCallRequest): seq[byte] =
+  for p in m.responseParameters: result.putBytes(2, p.encode)
+  if m.payload.body.len > 0: result.putBytes(3, m.payload.encode)
+  if m.hasResponseStatus: result.putBytes(7, m.responseStatus.encode)
+
+proc decodeStreamingOutputCallRequest*(data: seq[byte]): StreamingOutputCallRequest =
+  for (f, w, r) in fields(data):
+    if f == 2 and w == 2: result.responseParameters.add decodeResponseParameters(r[].getLen())
+    elif f == 3 and w == 2: result.payload = decodePayload(r[].getLen())
+    elif f == 7 and w == 2:
+      result.responseStatus = decodeEchoStatus(r[].getLen())
+      result.hasResponseStatus = true
+    else: r[].skip(w)
+
+proc encode*(m: StreamingOutputCallResponse): seq[byte] =
+  result.putBytes(1, m.payload.encode)
+
+proc decodeStreamingOutputCallResponse*(data: seq[byte]): StreamingOutputCallResponse =
+  for (f, w, r) in fields(data):
+    if f == 1 and w == 2: result.payload = decodePayload(r[].getLen())
+    else: r[].skip(w)
+
+proc encode*(m: StreamingInputCallRequest): seq[byte] =
+  result.putBytes(1, m.payload.encode)
+
+proc decodeStreamingInputCallRequest*(data: seq[byte]): StreamingInputCallRequest =
+  for (f, w, r) in fields(data):
+    if f == 1 and w == 2: result.payload = decodePayload(r[].getLen())
+    else: r[].skip(w)
+
+proc encode*(m: StreamingInputCallResponse): seq[byte] =
+  result.putInt(1, m.aggregatedPayloadSize)
+
+proc decodeStreamingInputCallResponse*(data: seq[byte]): StreamingInputCallResponse =
+  for (f, w, r) in fields(data):
+    if f == 1 and w == 0: result.aggregatedPayloadSize = cast[int32](r[].getVarint())
+    else: r[].skip(w)

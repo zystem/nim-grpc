@@ -22,6 +22,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var (
+	reqSizes  = []int{27182, 8, 1828, 45904}
+	respSizes = []int32{31415, 9, 2653, 58979}
+)
+
 const (
 	initialKey  = "x-grpc-test-echo-initial"
 	trailingKey = "x-grpc-test-echo-trailing-bin"
@@ -194,17 +199,159 @@ var cases = []testCase{
 	{"timeout_on_sleeping_server", func(ctx context.Context, cc *grpc.ClientConn) error {
 		ctx, cancel := context.WithTimeout(ctx, time.Millisecond)
 		defer cancel()
-		_, err := testpb.NewTestServiceClient(cc).UnaryCall(ctx, &testpb.SimpleRequest{
-			ResponseStatus: &testpb.EchoStatus{Code: 0},
-			Payload:        &testpb.Payload{Body: make([]byte, 27182)},
-			ResponseSize:   31415,
-			FillUsername:   false,
-		}, grpc.WaitForReady(false))
-		// The reference test sleeps on a streaming call; a unary call that
-		// overruns 1 ms is either DEADLINE_EXCEEDED or (fast server) OK.
-		st, _ := status.FromError(err)
-		if err != nil && st.Code() != codes.DeadlineExceeded {
-			return fmt.Errorf("code %v, want DEADLINE_EXCEEDED or OK", st.Code())
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err == nil {
+			err = s.Send(&testpb.StreamingOutputCallRequest{Payload: &testpb.Payload{Body: make([]byte, 27182)}})
+			if err == nil || err == io.EOF {
+				_, err = s.Recv()
+			}
+		}
+		return expectCode(err, codes.DeadlineExceeded, "")
+	}},
+	{"client_streaming", func(ctx context.Context, cc *grpc.ClientConn) error {
+		s, err := testpb.NewTestServiceClient(cc).StreamingInputCall(ctx)
+		if err != nil {
+			return err
+		}
+		for _, n := range reqSizes {
+			if err := s.Send(&testpb.StreamingInputCallRequest{Payload: &testpb.Payload{Body: make([]byte, n)}}); err != nil {
+				return err
+			}
+		}
+		r, err := s.CloseAndRecv()
+		if err != nil {
+			return err
+		}
+		if r.GetAggregatedPayloadSize() != 74922 {
+			return fmt.Errorf("aggregated %d", r.GetAggregatedPayloadSize())
+		}
+		return nil
+	}},
+	{"server_streaming", func(ctx context.Context, cc *grpc.ClientConn) error {
+		req := &testpb.StreamingOutputCallRequest{}
+		for _, n := range respSizes {
+			req.ResponseParameters = append(req.ResponseParameters, &testpb.ResponseParameters{Size: n})
+		}
+		s, err := testpb.NewTestServiceClient(cc).StreamingOutputCall(ctx, req)
+		if err != nil {
+			return err
+		}
+		for _, n := range respSizes {
+			r, err := s.Recv()
+			if err != nil {
+				return err
+			}
+			if len(r.GetPayload().GetBody()) != int(n) {
+				return fmt.Errorf("size %d, want %d", len(r.GetPayload().GetBody()), n)
+			}
+		}
+		if _, err := s.Recv(); err != io.EOF {
+			return fmt.Errorf("want EOF, got %v", err)
+		}
+		return nil
+	}},
+	{"ping_pong", func(ctx context.Context, cc *grpc.ClientConn) error {
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err != nil {
+			return err
+		}
+		for i := range reqSizes {
+			if err := s.Send(&testpb.StreamingOutputCallRequest{
+				ResponseParameters: []*testpb.ResponseParameters{{Size: respSizes[i]}},
+				Payload:            &testpb.Payload{Body: make([]byte, reqSizes[i])},
+			}); err != nil {
+				return err
+			}
+			r, err := s.Recv()
+			if err != nil {
+				return err
+			}
+			if len(r.GetPayload().GetBody()) != int(respSizes[i]) {
+				return fmt.Errorf("size %d", len(r.GetPayload().GetBody()))
+			}
+		}
+		s.CloseSend()
+		if _, err := s.Recv(); err != io.EOF {
+			return fmt.Errorf("want EOF, got %v", err)
+		}
+		return nil
+	}},
+	{"empty_stream", func(ctx context.Context, cc *grpc.ClientConn) error {
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err != nil {
+			return err
+		}
+		s.CloseSend()
+		if _, err := s.Recv(); err != io.EOF {
+			return fmt.Errorf("want EOF, got %v", err)
+		}
+		return nil
+	}},
+	{"cancel_after_begin", func(ctx context.Context, cc *grpc.ClientConn) error {
+		ctx, cancel := context.WithCancel(ctx)
+		s, err := testpb.NewTestServiceClient(cc).StreamingInputCall(ctx)
+		if err != nil {
+			return err
+		}
+		cancel()
+		_, err = s.CloseAndRecv()
+		return expectCode(err, codes.Canceled, "")
+	}},
+	{"cancel_after_first_response", func(ctx context.Context, cc *grpc.ClientConn) error {
+		ctx, cancel := context.WithCancel(ctx)
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err != nil {
+			return err
+		}
+		if err := s.Send(&testpb.StreamingOutputCallRequest{
+			ResponseParameters: []*testpb.ResponseParameters{{Size: 31415}},
+			Payload:            &testpb.Payload{Body: make([]byte, 27182)},
+		}); err != nil {
+			return err
+		}
+		if _, err := s.Recv(); err != nil {
+			return err
+		}
+		cancel()
+		_, err = s.Recv()
+		return expectCode(err, codes.Canceled, "")
+	}},
+	{"status_code_and_message_duplex", func(ctx context.Context, cc *grpc.ClientConn) error {
+		msg := "test status message"
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err != nil {
+			return err
+		}
+		s.Send(&testpb.StreamingOutputCallRequest{ResponseStatus: &testpb.EchoStatus{Code: 2, Message: msg}})
+		s.CloseSend()
+		_, err = s.Recv()
+		return expectCode(err, codes.Unknown, msg)
+	}},
+	{"custom_metadata_duplex", func(ctx context.Context, cc *grpc.ClientConn) error {
+		ctx = metadata.AppendToOutgoingContext(ctx,
+			initialKey, "test_initial_metadata_value",
+			trailingKey, string([]byte{0xab, 0xab, 0xab}))
+		s, err := testpb.NewTestServiceClient(cc).FullDuplexCall(ctx)
+		if err != nil {
+			return err
+		}
+		s.Send(&testpb.StreamingOutputCallRequest{
+			ResponseParameters: []*testpb.ResponseParameters{{Size: 314159}},
+			Payload:            &testpb.Payload{Body: make([]byte, 271828)},
+		})
+		s.CloseSend()
+		if _, err := s.Recv(); err != nil {
+			return err
+		}
+		if _, err := s.Recv(); err != io.EOF {
+			return fmt.Errorf("want EOF, got %v", err)
+		}
+		h, _ := s.Header()
+		if v := h.Get(initialKey); len(v) != 1 || v[0] != "test_initial_metadata_value" {
+			return fmt.Errorf("initial metadata %v", v)
+		}
+		if v := s.Trailer().Get(trailingKey); len(v) != 1 || !bytes.Equal([]byte(v[0]), []byte{0xab, 0xab, 0xab}) {
+			return fmt.Errorf("trailing metadata %v", v)
 		}
 		return nil
 	}},

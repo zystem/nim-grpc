@@ -2,11 +2,11 @@
 
 gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
-**Status:** early. Unary gRPC calls work, client and server, over plaintext
-HTTP/2. The unary interop cases pass against grpc-go in both directions
-([docs/interop.md](docs/interop.md)). The HTTP/2 layer passes 134 of 146 h2spec
-tests ([docs/h2spec.md](docs/h2spec.md)). Streaming, TLS and code generation
-are next.
+**Status:** early. Unary and streaming calls (client-, server- and
+bidirectional) work, client and server, over plaintext HTTP/2. 14 interop cases
+pass against grpc-go in both directions ([docs/interop.md](docs/interop.md)).
+The HTTP/2 layer passes 135 of 146 h2spec tests
+([docs/h2spec.md](docs/h2spec.md)). TLS and code generation are next.
 
 ```nim
 import grpc
@@ -25,6 +25,26 @@ let ch = dial("127.0.0.1", 50051)
 let r = ch.unaryCall("/helloworld.Greeter/SayHello", @[1'u8, 2, 3], timeoutMs = 1000)
 ```
 
+Streaming: the server handler gets a `ServerCall`, the client opens a
+`ClientCall`.
+
+```nim
+proc chat(ctx: var ServerContext; call: var ServerCall)
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  var msg: seq[byte]
+  while call.recv(msg):        # until the client half-closes
+    call.send(msg)             # echo each message back
+
+srv.addStreaming("/demo.Chat/Talk", chat)   # before srv.start()
+
+var call = ch.newCall("/demo.Chat/Talk", timeoutMs = 5000)
+call.send(@[1'u8])
+call.closeSend()
+var reply: seq[byte]
+while call.recv(reply): discard  # raises GrpcError on a non-OK status
+call.close()
+```
+
 ## Design
 
 - **I/O-free core.** `grpc/h2/session` wraps nghttp2's memory API: bytes go in
@@ -33,8 +53,10 @@ let r = ch.unaryCall("/helloworld.Greeter/SayHello", @[1'u8, 2, 3], timeoutMs = 
   under blocking threads, chronos, or a test that pipes two sessions together.
 - **Adapters on top.** `grpc/h2/blocking`: a reader and a writer thread per
   connection, the connection lock is never held during socket I/O, callers
-  block on their own stream, with deadlines. Server handlers run on a worker
-  pool outside the connection lock. A chronos adapter is planned. TLS with ALPN
+  block on their own stream, with deadlines. A server handler starts when its
+  request HEADERS arrive and runs on its own worker thread from a pool that
+  grows on demand. Output is bounded per connection and per stream, so a slow
+  peer slows the sender down. A chronos adapter is planned. TLS with ALPN
   `h2` lives in the adapters.
 - **ORC-safe FFI.** nghttp2 only ever sees raw `ptr` to objects the session owns;
   callbacks are `raises: []` and never let an exception reach C.
@@ -66,7 +88,7 @@ nimble tsan   # the same under ThreadSanitizer
 2. Blocking adapter over TCP; h2spec conformance — done
 3. gRPC unary calls: message framing, `grpc-timeout`, status in trailers,
    metadata; interop tests against grpc-go — done
-4. Streaming calls (client, server, bidi)
+4. Streaming calls (client, server, bidi) — done
 5. TLS with ALPN `h2`, mTLS
 6. chronos adapter
 7. Code generation from `.proto`

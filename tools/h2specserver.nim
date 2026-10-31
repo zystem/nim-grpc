@@ -10,7 +10,7 @@ proc handler(req: Request; ud: pointer): Reply {.nimcall, gcsafe, raises: [].} =
   result.body = @[byte('o'), byte('k')]
 
 let port = if paramCount() >= 1: parseInt(paramStr(1)) else: 8080
-let srv = newServer(handler, Port(port))
+let srv = newServer(handler, port = Port(port))
 srv.start()
 echo "listening on ", port
 while true: sleep(1000)
