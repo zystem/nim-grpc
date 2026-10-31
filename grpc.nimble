@@ -6,7 +6,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 
-const tests = ["tests/th2session.nim", "tests/tblocking.nim"]
+const tests = ["tests/th2session.nim", "tests/tblocking.nim", "tests/tgrpc.nim"]
 
 proc runAll(flags: string) =
   for t in tests:

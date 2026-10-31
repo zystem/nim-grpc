@@ -5,7 +5,7 @@
 import std/[os, strutils]
 import grpc/h2/blocking
 
-proc handler(req: Request): Reply {.nimcall, gcsafe, raises: [].} =
+proc handler(req: Request; ud: pointer): Reply {.nimcall, gcsafe, raises: [].} =
   result.headers = @[(":status", "200"), ("content-type", "text/plain")]
   result.body = @[byte('o'), byte('k')]
 

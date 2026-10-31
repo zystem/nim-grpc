@@ -2,8 +2,28 @@
 
 gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
-**Status:** early. HTTP/2 works over TCP (blocking adapter) and passes 134 of 146
-h2spec tests (see [docs/h2spec.md](docs/h2spec.md)); the gRPC layer is next.
+**Status:** early. Unary gRPC calls work, client and server, over plaintext
+HTTP/2. The unary interop cases pass against grpc-go in both directions
+([docs/interop.md](docs/interop.md)). The HTTP/2 layer passes 134 of 146 h2spec
+tests ([docs/h2spec.md](docs/h2spec.md)). Streaming, TLS and code generation
+are next.
+
+```nim
+import grpc
+
+proc sayHello(ctx: var ServerContext; req: seq[byte]): seq[byte]
+    {.nimcall, gcsafe, raises: [CatchableError].} =
+  if req.len == 0: raise newGrpcError(scInvalidArgument, "empty name")
+  ctx.trailers.add ("x-served-by", "nim")
+  req
+
+let srv = newGrpcServer(port = 50051)
+srv.addUnary("/helloworld.Greeter/SayHello", sayHello)
+srv.start()
+
+let ch = dial("127.0.0.1", 50051)
+let r = ch.unaryCall("/helloworld.Greeter/SayHello", @[1'u8, 2, 3], timeoutMs = 1000)
+```
 
 ## Design
 
@@ -13,7 +33,8 @@ h2spec tests (see [docs/h2spec.md](docs/h2spec.md)); the gRPC layer is next.
   under blocking threads, chronos, or a test that pipes two sessions together.
 - **Adapters on top.** `grpc/h2/blocking`: a reader and a writer thread per
   connection, the connection lock is never held during socket I/O, callers
-  block on their own stream. A chronos adapter is planned. TLS with ALPN
+  block on their own stream, with deadlines. Server handlers run on a worker
+  pool outside the connection lock. A chronos adapter is planned. TLS with ALPN
   `h2` lives in the adapters.
 - **ORC-safe FFI.** nghttp2 only ever sees raw `ptr` to objects the session owns;
   callbacks are `raises: []` and never let an exception reach C.
@@ -44,7 +65,7 @@ nimble tsan   # the same under ThreadSanitizer
 1. HTTP/2 session over nghttp2 — done
 2. Blocking adapter over TCP; h2spec conformance — done
 3. gRPC unary calls: message framing, `grpc-timeout`, status in trailers,
-   metadata; interop tests against grpc-go
+   metadata; interop tests against grpc-go — done
 4. Streaming calls (client, server, bidi)
 5. TLS with ALPN `h2`, mTLS
 6. chronos adapter

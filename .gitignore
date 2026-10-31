@@ -1,6 +1,11 @@
 nimcache/
 *.exe
-tests/*
-!tests/*.nim
-tools/*
-!tools/*.nim
+# compiled test and tool binaries (files without an extension)
+/tests/*
+!/tests/*.nim
+!/tests/interop/
+/tests/interop/*
+!/tests/interop/*.nim
+!/tests/interop/gopeer/
+/tools/*
+!/tools/*.nim

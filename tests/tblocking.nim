@@ -1,6 +1,6 @@
 ## Blocking client and server over loopback TCP.
 
-import std/[unittest, strutils, typedthreads]
+import std/[unittest, strutils, typedthreads, os, times]
 import grpc/h2/blocking
 
 proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
@@ -12,11 +12,12 @@ proc header(hs: seq[Header]; name: string): string =
   for (k, v) in hs:
     if k == name: return v
 
-proc echoHandler(req: Request): Reply {.nimcall, gcsafe, raises: [].} =
+proc echoHandler(req: Request; ud: pointer): Reply {.nimcall, gcsafe, raises: [].} =
   ## Echoes the body back, upper-cased, with the path in a trailer.
   var path = ""
   for (k, v) in req.headers:
     if k == ":path": path = v
+  if path == "/slow": sleep(300)
   result.headers = @[(":status", "200"), ("content-type", "application/grpc")]
   result.body = req.body
   for b in result.body.mitems:
@@ -86,4 +87,29 @@ suite "blocking h2 over tcp":
     srv.start()
     expect H2Error:
       discard c.request(reqHeaders(srv.port, "/x"), "a".toBytes)
+    c.close()
+
+  test "deadline resets the stream and the connection stays usable":
+    let c = dial("127.0.0.1", srv.port)
+    let t0 = epochTime()
+    expect H2Timeout:
+      discard c.request(reqHeaders(srv.port, "/slow"), "a".toBytes, timeoutMs = 50)
+    check epochTime() - t0 < 0.25
+    let r = c.request(reqHeaders(srv.port, "/x"), "b".toBytes, timeoutMs = 2000)
+    check r.body.toStr == "B"
+    c.close()
+
+  test "a slow handler does not block other streams on the connection":
+    let c = dial("127.0.0.1", srv.port)
+    type Arg = tuple[c: ptr Conn; port: Port]
+    proc slow(a: Arg) {.thread.} =
+      discard a.c[].request(reqHeaders(a.port, "/slow"), "s".toBytes)
+    var th: Thread[Arg]
+    createThread(th, slow, (c.addr, srv.port))
+    sleep(20)
+    let t0 = epochTime()
+    let r = c.request(reqHeaders(srv.port, "/fast"), "f".toBytes)
+    check r.body.toStr == "F"
+    check epochTime() - t0 < 0.2
+    joinThread(th)
     c.close()
