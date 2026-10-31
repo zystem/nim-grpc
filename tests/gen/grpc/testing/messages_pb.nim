@@ -2,7 +2,7 @@
 {.push warning[UnusedImport]: off.}
 import std/[options, tables]
 import grpc/protobuf
-export options, tables, protobuf
+export protobuf
 {.pop.}
 
 type
@@ -106,26 +106,26 @@ type
     rpcMetadata*: seq[LoadBalancerStatsResponse_RpcMetadata]
 
   LoadBalancerStatsResponse_RpcsByPeer* = object
-    rpcsByPeer*: Table[string, int32]
+    rpcsByPeer*: tables.Table[string, int32]
 
   LoadBalancerStatsResponse* = object
-    rpcsByPeer*: Table[string, int32]
+    rpcsByPeer*: tables.Table[string, int32]
     numFailures*: int32
-    rpcsByMethod*: Table[string, LoadBalancerStatsResponse_RpcsByPeer]
-    metadatasByPeer*: Table[string, LoadBalancerStatsResponse_MetadataByPeer]
+    rpcsByMethod*: tables.Table[string, LoadBalancerStatsResponse_RpcsByPeer]
+    metadatasByPeer*: tables.Table[string, LoadBalancerStatsResponse_MetadataByPeer]
 
   LoadBalancerAccumulatedStatsRequest* = object
     discard
 
   LoadBalancerAccumulatedStatsResponse_MethodStats* = object
     rpcsStarted*: int32
-    `result`*: Table[int32, int32]
+    `result`*: tables.Table[int32, int32]
 
   LoadBalancerAccumulatedStatsResponse* = object
-    numRpcsStartedByMethod*: Table[string, int32]
-    numRpcsSucceededByMethod*: Table[string, int32]
-    numRpcsFailedByMethod*: Table[string, int32]
-    statsPerMethod*: Table[string, LoadBalancerAccumulatedStatsResponse_MethodStats]
+    numRpcsStartedByMethod*: tables.Table[string, int32]
+    numRpcsSucceededByMethod*: tables.Table[string, int32]
+    numRpcsFailedByMethod*: tables.Table[string, int32]
+    statsPerMethod*: tables.Table[string, LoadBalancerAccumulatedStatsResponse_MethodStats]
 
   ClientConfigureRequest_RpcType* = distinct int32
 
@@ -148,8 +148,8 @@ type
   TestOrcaReport* = object
     cpuUtilization*: float64
     memoryUtilization*: float64
-    requestCost*: Table[string, float64]
-    utilization*: Table[string, float64]
+    requestCost*: tables.Table[string, float64]
+    utilization*: tables.Table[string, float64]
 
   SetReturnStatusRequest* = object
     grpcCodeToReturn*: int32
@@ -299,6 +299,9 @@ proc decodeFrom*(m: var BoolValue; r: var PbReader) {.raises: [ProtobufError], g
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[BoolValue]): string = "grpc.testing.BoolValue"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: BoolValue): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -338,6 +341,9 @@ proc decodeFrom*(m: var Payload; r: var PbReader) {.raises: [ProtobufError], gcs
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[Payload]): string = "grpc.testing.Payload"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: Payload): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -376,6 +382,9 @@ proc decodeFrom*(m: var EchoStatus; r: var PbReader) {.raises: [ProtobufError], 
       if wt == wtLen: m.message = r.getString()
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[EchoStatus]): string = "grpc.testing.EchoStatus"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: EchoStatus): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -485,6 +494,9 @@ proc decodeFrom*(m: var SimpleRequest; r: var PbReader) {.raises: [ProtobufError
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[SimpleRequest]): string = "grpc.testing.SimpleRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: SimpleRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -551,6 +563,9 @@ proc decodeFrom*(m: var SimpleResponse; r: var PbReader) {.raises: [ProtobufErro
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[SimpleResponse]): string = "grpc.testing.SimpleResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: SimpleResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -596,6 +611,9 @@ proc decodeFrom*(m: var StreamingInputCallRequest; r: var PbReader) {.raises: [P
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[StreamingInputCallRequest]): string = "grpc.testing.StreamingInputCallRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: StreamingInputCallRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -628,6 +646,9 @@ proc decodeFrom*(m: var StreamingInputCallResponse; r: var PbReader) {.raises: [
       if wt == wtVarint: m.aggregatedPayloadSize = cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64))
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[StreamingInputCallResponse]): string = "grpc.testing.StreamingInputCallResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: StreamingInputCallResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -685,6 +706,9 @@ proc decodeFrom*(m: var ResponseParameters; r: var PbReader) {.raises: [Protobuf
         m.hasFillPeerSocketAddress = true
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[ResponseParameters]): string = "grpc.testing.ResponseParameters"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: ResponseParameters): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -756,6 +780,9 @@ proc decodeFrom*(m: var StreamingOutputCallRequest; r: var PbReader) {.raises: [
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[StreamingOutputCallRequest]): string = "grpc.testing.StreamingOutputCallRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: StreamingOutputCallRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -798,6 +825,9 @@ proc decodeFrom*(m: var StreamingOutputCallResponse; r: var PbReader) {.raises: 
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[StreamingOutputCallResponse]): string = "grpc.testing.StreamingOutputCallResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: StreamingOutputCallResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -830,6 +860,9 @@ proc decodeFrom*(m: var ReconnectParams; r: var PbReader) {.raises: [ProtobufErr
       if wt == wtVarint: m.maxReconnectBackoffMs = cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64))
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[ReconnectParams]): string = "grpc.testing.ReconnectParams"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: ReconnectParams): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -876,6 +909,9 @@ proc decodeFrom*(m: var ReconnectInfo; r: var PbReader) {.raises: [ProtobufError
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[ReconnectInfo]): string = "grpc.testing.ReconnectInfo"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: ReconnectInfo): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -920,6 +956,9 @@ proc decodeFrom*(m: var LoadBalancerStatsRequest; r: var PbReader) {.raises: [Pr
       if wt == wtLen: m.metadataKeys.add r.getString()
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[LoadBalancerStatsRequest]): string = "grpc.testing.LoadBalancerStatsRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: LoadBalancerStatsRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -980,6 +1019,9 @@ proc decodeFrom*(m: var LoadBalancerStatsResponse_MetadataEntry; r: var PbReader
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[LoadBalancerStatsResponse_MetadataEntry]): string = "grpc.testing.LoadBalancerStatsResponse.MetadataEntry"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: LoadBalancerStatsResponse_MetadataEntry): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1017,6 +1059,9 @@ proc decodeFrom*(m: var LoadBalancerStatsResponse_RpcMetadata; r: var PbReader) 
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[LoadBalancerStatsResponse_RpcMetadata]): string = "grpc.testing.LoadBalancerStatsResponse.RpcMetadata"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: LoadBalancerStatsResponse_RpcMetadata): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1053,6 +1098,9 @@ proc decodeFrom*(m: var LoadBalancerStatsResponse_MetadataByPeer; r: var PbReade
         m.rpcMetadata.add v
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[LoadBalancerStatsResponse_MetadataByPeer]): string = "grpc.testing.LoadBalancerStatsResponse.MetadataByPeer"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: LoadBalancerStatsResponse_MetadataByPeer): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1101,6 +1149,9 @@ proc decodeFrom*(m: var LoadBalancerStatsResponse_RpcsByPeer; r: var PbReader) {
         m.rpcsByPeer[k] = v
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[LoadBalancerStatsResponse_RpcsByPeer]): string = "grpc.testing.LoadBalancerStatsResponse.RpcsByPeer"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: LoadBalancerStatsResponse_RpcsByPeer): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1202,6 +1253,9 @@ proc decodeFrom*(m: var LoadBalancerStatsResponse; r: var PbReader) {.raises: [P
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[LoadBalancerStatsResponse]): string = "grpc.testing.LoadBalancerStatsResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: LoadBalancerStatsResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1230,6 +1284,9 @@ proc decodeFrom*(m: var LoadBalancerAccumulatedStatsRequest; r: var PbReader) {.
     r.getTag(field, wt)
     case field
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[LoadBalancerAccumulatedStatsRequest]): string = "grpc.testing.LoadBalancerAccumulatedStatsRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: LoadBalancerAccumulatedStatsRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1284,6 +1341,9 @@ proc decodeFrom*(m: var LoadBalancerAccumulatedStatsResponse_MethodStats; r: var
         m.`result`[k] = v
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[LoadBalancerAccumulatedStatsResponse_MethodStats]): string = "grpc.testing.LoadBalancerAccumulatedStatsResponse.MethodStats"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: LoadBalancerAccumulatedStatsResponse_MethodStats): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1398,6 +1458,9 @@ proc decodeFrom*(m: var LoadBalancerAccumulatedStatsResponse; r: var PbReader) {
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[LoadBalancerAccumulatedStatsResponse]): string = "grpc.testing.LoadBalancerAccumulatedStatsResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: LoadBalancerAccumulatedStatsResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1455,6 +1518,9 @@ proc decodeFrom*(m: var ClientConfigureRequest_Metadata; r: var PbReader) {.rais
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[ClientConfigureRequest_Metadata]): string = "grpc.testing.ClientConfigureRequest.Metadata"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: ClientConfigureRequest_Metadata): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1510,6 +1576,9 @@ proc decodeFrom*(m: var ClientConfigureRequest; r: var PbReader) {.raises: [Prot
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[ClientConfigureRequest]): string = "grpc.testing.ClientConfigureRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: ClientConfigureRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1538,6 +1607,9 @@ proc decodeFrom*(m: var ClientConfigureResponse; r: var PbReader) {.raises: [Pro
     r.getTag(field, wt)
     case field
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[ClientConfigureResponse]): string = "grpc.testing.ClientConfigureResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: ClientConfigureResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1571,6 +1643,9 @@ proc decodeFrom*(m: var MemorySize; r: var PbReader) {.raises: [ProtobufError], 
       if wt == wtVarint: m.rss = cast[int64](r.getVarint())
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[MemorySize]): string = "grpc.testing.MemorySize"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: MemorySize): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1653,6 +1728,9 @@ proc decodeFrom*(m: var TestOrcaReport; r: var PbReader) {.raises: [ProtobufErro
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[TestOrcaReport]): string = "grpc.testing.TestOrcaReport"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: TestOrcaReport): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1691,6 +1769,9 @@ proc decodeFrom*(m: var SetReturnStatusRequest; r: var PbReader) {.raises: [Prot
       if wt == wtLen: m.grpcStatusDescription = r.getString()
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[SetReturnStatusRequest]): string = "grpc.testing.SetReturnStatusRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: SetReturnStatusRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -1759,6 +1840,9 @@ proc decodeFrom*(m: var HookRequest; r: var PbReader) {.raises: [ProtobufError],
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[HookRequest]): string = "grpc.testing.HookRequest"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: HookRequest): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -1787,6 +1871,9 @@ proc decodeFrom*(m: var HookResponse; r: var PbReader) {.raises: [ProtobufError]
     r.getTag(field, wt)
     case field
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[HookResponse]): string = "grpc.testing.HookResponse"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: HookResponse): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its

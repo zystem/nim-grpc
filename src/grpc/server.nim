@@ -180,10 +180,17 @@ proc checkCancelled*(ctx: ServerContext) =
 
 proc sleep*(ctx: ServerContext; ms: int) =
   ## Like `os.sleep`, but wakes up and raises (see `checkCancelled`) as soon
-  ## as the call is over, instead of keeping the worker for the full `ms`.
+  ## as the call is over, instead of keeping the worker for the full `ms`. If
+  ## the deadline comes first, raises DEADLINE_EXCEEDED when it is reached.
   if ctx.stream == nil: return
-  discard ctx.stream[].waitClosed(ms)
-  ctx.checkCancelled()
+  let left = ctx.stream[].remainingMs
+  let hitsDeadline = left >= 0 and left <= ms
+  if ctx.stream[].waitClosed(ms):
+    ctx.checkCancelled()
+    raise newGrpcError(scCancelled, "call cancelled")
+  if hitsDeadline:
+    # The wait ended at the deadline (possibly a hair before it, by rounding).
+    raise newGrpcError(scDeadlineExceeded, "deadline exceeded")
 
 proc finishCall(call: var ServerCall; code: StatusCode; msg: string; md: Metadata) =
   ## Ends the call with a status: trailers after a response, or trailers-only.

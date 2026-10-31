@@ -5,13 +5,18 @@
 ##
 ## For `a/b.proto` it writes `OUT/a/b_pb.nim`: one module per .proto file,
 ## importing the modules of the files it imports. Generate every file a
-## generated module depends on, google/protobuf ones included.
+## generated module depends on, except google/protobuf/*.proto: those come
+## with this package (`grpc/wkt`). Code that reads `Option` or `Table` fields
+## imports std/options and std/tables itself (the generated modules do not
+## re-export them).
 ##
 ## Mapping:
 ## * message      -> object; nested `Outer.Inner` -> `Outer_Inner`
 ## * enum         -> `distinct int32` plus `Enum_VALUE` constants (proto3 enums
 ##                   are open: unknown values survive a round trip)
 ## * scalar       -> its Nim type; `optional` and proto2 fields -> `Option[T]`
+##                   (written `options.Option` in generated code, so a proto
+##                   message called `Option` does not clash)
 ## * message field-> the value plus `has<Field>`; a field whose type can contain
 ##                   the message itself -> `ref T` (nil when absent)
 ## * repeated     -> `seq[T]` (packed per the proto rules; both forms decoded)
@@ -305,9 +310,17 @@ proc wireOf(t: FieldType): string =
 
 proc packable(t: FieldType): bool = t notin {ftString, ftBytes, ftMessage, ftGroup}
 
+proc typeRef(g: Gen; protoName: string): string =
+  ## A message or enum type as written in this module: qualified with its
+  ## module when it comes from another file, so it cannot clash with names
+  ## from std (google.protobuf.Option against options.Option, say).
+  let info = g.reg.types[protoName]
+  if info.file == g.file.name: info.nimName
+  else: moduleOf(info.file).extractFilename & "." & info.nimName.strip(chars = {'`'})
+
 proc nimType(g: Gen; f: FieldDesc): string =
   case f.typ
-  of ftMessage, ftEnum: g.reg.types[f.typeName].nimName
+  of ftMessage, ftEnum: g.typeRef(f.typeName)
   else: nimScalar(f.typ)
 
 proc writeValue(t: FieldType; v, w: string): string =
@@ -424,7 +437,7 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
     let fname = ident(f.name)
     case g.shape(full, f)
     of fsPlain: t.add "    " & fname & "*: " & g.nimType(f)
-    of fsOption: t.add "    " & fname & "*: Option[" & g.nimType(f) & "]"
+    of fsOption: t.add "    " & fname & "*: options.Option[" & g.nimType(f) & "]"
     of fsMessage:
       t.add "    " & fname & "*: " & g.nimType(f)
       t.add "    " & f.hasName & "*: bool  ## set when decoded; see `encode`"
@@ -436,7 +449,7 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
       for ef in e[].fields:
         if ef.number == 1: kf = ef
         elif ef.number == 2: vf = ef
-      t.add "    " & fname & "*: Table[" & g.nimType(kf) & ", " & g.nimType(vf) & "]"
+      t.add "    " & fname & "*: tables.Table[" & g.nimType(kf) & ", " & g.nimType(vf) & "]"
   g.typesOut.add t.join("\n")
 
   g.fwdOut.add "func isEmpty*(m: " & n & "): bool {.raises: [].}"
@@ -522,7 +535,7 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
     for o in oneofMembers.getOrDefault(f.oneofIndex):
       if o.number == f.number: continue
       case g.shape(full, o)
-      of fsOption: result.add "m." & ident(o.name) & " = none(" & g.nimType(o) & ")"
+      of fsOption: result.add "m." & ident(o.name) & " = options.none(" & g.nimType(o) & ")"
       of fsMessage:
         result.add "m." & ident(o.name) & " = default(" & g.nimType(o) & ")"
         result.add "m." & o.hasName & " = false"
@@ -538,7 +551,7 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
       d.add "      if wt == " & wire & ": " & fname & " = " & g.readValue(f, "r")
       d.add "      else: r.skipField(wt, field)"
     of fsOption:
-      d.add "      if wt == " & wire & ": " & fname & " = some(" & g.readValue(f, "r") & ")"
+      d.add "      if wt == " & wire & ": " & fname & " = options.some(" & g.readValue(f, "r") & ")"
       d.add "      else: r.skipField(wt, field)"
     of fsMessage:
       d.add "      if wt == wtLen:"
@@ -596,6 +609,8 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
   d.add "    else: r.skipField(wt, field)"
   g.procsOut.add d.join("\n")
 
+  g.procsOut.add "func protoName*(_: typedesc[" & n & "]): string = \"" &
+    full[1 .. ^1] & "\"\n  ## The fully qualified Protobuf name (for google.protobuf.Any)."
   g.procsOut.add "proc encode*(m: " & n & "): seq[byte] {.raises: [], gcsafe.} =\n" &
     "  ## The wire form of `m`. A message-typed field is written when its\n" &
     "  ## `has` flag is set or its value differs from the default.\n" &
@@ -621,8 +636,8 @@ proc genService(g: var Gen; s: ServiceDesc): string =
   o.add "    ## Server implementation of " & fullName & "; methods left nil answer"
   o.add "    ## UNIMPLEMENTED."
   for m in s.methods:
-    let req = g.reg.types[m.input].nimName
-    let resp = g.reg.types[m.output].nimName
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
     let kind =
       if m.clientStreaming and m.serverStreaming: "BidiFn"
       elif m.clientStreaming: "ClientStreamFn"
@@ -633,8 +648,8 @@ proc genService(g: var Gen; s: ServiceDesc): string =
   o.add "proc new" & sn & "Client*(ch: GrpcChannel): " & sn & "Client = " & sn & "Client(ch: ch)"
   o.add ""
   for m in s.methods:
-    let req = g.reg.types[m.input].nimName
-    let resp = g.reg.types[m.output].nimName
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
     let path = "/" & fullName & "/" & m.name
     let mn = ident(m.name)
     let mnPlain = mn.strip(chars = {'`'})
@@ -667,8 +682,8 @@ proc genService(g: var Gen; s: ServiceDesc): string =
   o.add "  ## Adds the methods of " & fullName & " that `h` implements."
   if s.methods.len == 0: o.add "  discard"
   for m in s.methods:
-    let req = g.reg.types[m.input].nimName
-    let resp = g.reg.types[m.output].nimName
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
     let path = "/" & fullName & "/" & m.name
     let adder =
       if m.clientStreaming and m.serverStreaming: "addTypedBidi"
@@ -679,7 +694,13 @@ proc genService(g: var Gen; s: ServiceDesc): string =
           "](s, \"" & path & "\", h." & ident(m.name) & ")"
   o.join("\n")
 
+const wktPrefix = "google/protobuf/"
+
 proc relImport(fromFile, toFile: string): string =
+  ## Well-known types come from the copy in this package (grpc/wkt), so user
+  ## code need not generate them; everything else is imported relatively.
+  if toFile.startsWith(wktPrefix):
+    return "grpc/wkt/" & moduleOf(toFile)
   let a = moduleOf(fromFile).parentDir
   let b = moduleOf(toFile)
   var rel = relativePath(b, if a.len > 0: a else: ".", '/')
@@ -699,7 +720,10 @@ proc generate(reg: Registry; f: var FileDesc): string =
   o.add "import grpc/protobuf"
   if f.services.len > 0: o.add "import grpc/typed"
   for dep in f.deps: o.add "import " & relImport(f.name, dep)
-  o.add "export options, tables, protobuf"
+  # std/options and std/tables are not re-exported: a proto message named
+  # `Option` (google.protobuf.Option) would then clash with them through
+  # this module. Import them where Option/Table fields are used.
+  o.add "export protobuf"
   for dep in f.deps:
     o.add "export " & moduleOf(dep).extractFilename
   if f.services.len > 0: o.add "export typed"

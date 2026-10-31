@@ -37,6 +37,12 @@ echo greeter.sayHello(HelloRequest(name: "Nim"), timeoutMs = 1000).message
 
 Streaming methods get `ClientReader` / `ClientWriter` / `ClientBidi` on the
 client side and `ServerWriter` / `ServerReader` / `ServerBidi` in handlers.
+
+The well-known types (`google/protobuf/*.proto`) come with the package, and
+generated code imports them from there. `import grpc/wkt` adds conversions:
+`Timestamp` to and from `times.Time`, protobuf `Duration` to and from
+`times.Duration`, `pack`/`unpack`/`isA` for `Any`, and `Struct`/`Value` to and
+from `JsonNode`.
 The type mapping (open enums, `Option` for explicit presence, `ref` for
 recursive fields, `Table` for maps) is documented at the top of
 [src/protoc_gen_nim.nim](src/protoc_gen_nim.nim). The codec is checked against
@@ -181,6 +187,7 @@ nimble tsan   # the same under ThreadSanitizer
 7. Code generation from `.proto` — done
 8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
 9. Keepalive, GOAWAY handling, graceful shutdown, reconnect — done
+10. Well-known types — done
 
 ## Nim compiler
 

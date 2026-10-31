@@ -1,0 +1,29 @@
+// Uses the well-known types; tests/twkt.nim.
+syntax = "proto3";
+
+package codec.wkt;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "codec.proto";
+
+message Event {
+  google.protobuf.Timestamp at = 1;
+  google.protobuf.Duration took = 2;
+  google.protobuf.Any detail = 3;
+  google.protobuf.Struct attrs = 4;
+  google.protobuf.Int64Value maybe_count = 5;
+  google.protobuf.StringValue maybe_name = 6;
+  google.protobuf.FieldMask mask = 7;
+  google.protobuf.Empty nothing = 8;
+  repeated google.protobuf.Value values = 9;
+}
+
+service Events {
+  rpc Ping (google.protobuf.Empty) returns (google.protobuf.Timestamp);
+}

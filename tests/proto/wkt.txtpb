@@ -1,0 +1,17 @@
+at { seconds: 1761955200 nanos: 123456789 }
+took { seconds: -3 nanos: -500000000 }
+detail {
+  [type.googleapis.com/codec.test.Scalars] { f_int32: -42 f_string: "inside any" }
+}
+attrs {
+  fields { key: "name" value { string_value: "x" } }
+  fields { key: "n" value { number_value: 2.5 } }
+  fields { key: "ok" value { bool_value: true } }
+  fields { key: "none" value { null_value: NULL_VALUE } }
+  fields { key: "list" value { list_value { values { number_value: 1 } values { string_value: "a" } } } }
+  fields { key: "obj" value { struct_value { fields { key: "k" value { bool_value: false } } } } }
+}
+maybe_count { value: 0 }
+mask { paths: "a.b" paths: "c" }
+nothing { }
+values { string_value: "v" }

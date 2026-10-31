@@ -2,7 +2,7 @@
 {.push warning[UnusedImport]: off.}
 import std/[options, tables]
 import grpc/protobuf
-export options, tables, protobuf
+export protobuf
 {.pop.}
 
 type
@@ -47,15 +47,15 @@ type
     strings*: seq[string]
     inners*: seq[Everything_Inner]
     colors*: seq[Color]
-    strToInt*: Table[string, int32]
-    intToInner*: Table[int32, Everything_Inner]
-    boolToStr*: Table[bool, string]
-    choiceStr*: Option[string]
+    strToInt*: tables.Table[string, int32]
+    intToInner*: tables.Table[int32, Everything_Inner]
+    boolToStr*: tables.Table[bool, string]
+    choiceStr*: options.Option[string]
     choiceInner*: Everything_Inner
     hasChoiceInner*: bool  ## set when decoded; see `encode`
-    choiceInt*: Option[int64]
-    maybeInt*: Option[int32]
-    maybeStr*: Option[string]
+    choiceInt*: options.Option[int64]
+    maybeInt*: options.Option[int32]
+    maybeStr*: options.Option[string]
     inner*: Everything_Inner
     hasInner*: bool  ## set when decoded; see `encode`
     tree*: Node
@@ -203,6 +203,9 @@ proc decodeFrom*(m: var Scalars; r: var PbReader) {.raises: [ProtobufError], gcs
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[Scalars]): string = "codec.test.Scalars"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: Scalars): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -255,6 +258,9 @@ proc decodeFrom*(m: var Node; r: var PbReader) {.raises: [ProtobufError], gcsafe
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
 
+func protoName*(_: typedesc[Node]): string = "codec.test.Node"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
+
 proc encode*(m: Node): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
   ## `has` flag is set or its value differs from the default.
@@ -305,6 +311,9 @@ proc decodeFrom*(m: var Everything_Inner; r: var PbReader) {.raises: [ProtobufEr
       if wt == wtVarint: m.mood = Everything_Inner_Mood(cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64)))
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[Everything_Inner]): string = "codec.test.Everything.Inner"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: Everything_Inner): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
@@ -508,28 +517,28 @@ proc decodeFrom*(m: var Everything; r: var PbReader) {.raises: [ProtobufError], 
     of 12:
       m.choiceInner = default(Everything_Inner)
       m.hasChoiceInner = false
-      m.choiceInt = none(int64)
-      if wt == wtLen: m.choiceStr = some(r.getString())
+      m.choiceInt = options.none(int64)
+      if wt == wtLen: m.choiceStr = options.some(r.getString())
       else: r.skipField(wt, field)
     of 13:
-      m.choiceStr = none(string)
-      m.choiceInt = none(int64)
+      m.choiceStr = options.none(string)
+      m.choiceInt = options.none(int64)
       if wt == wtLen:
         var sub = r.subReader()
         decodeFrom(m.choiceInner, sub)
         m.hasChoiceInner = true
       else: r.skipField(wt, field)
     of 14:
-      m.choiceStr = none(string)
+      m.choiceStr = options.none(string)
       m.choiceInner = default(Everything_Inner)
       m.hasChoiceInner = false
-      if wt == wtVarint: m.choiceInt = some(cast[int64](r.getVarint()))
+      if wt == wtVarint: m.choiceInt = options.some(cast[int64](r.getVarint()))
       else: r.skipField(wt, field)
     of 15:
-      if wt == wtVarint: m.maybeInt = some(cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64)))
+      if wt == wtVarint: m.maybeInt = options.some(cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64)))
       else: r.skipField(wt, field)
     of 16:
-      if wt == wtLen: m.maybeStr = some(r.getString())
+      if wt == wtLen: m.maybeStr = options.some(r.getString())
       else: r.skipField(wt, field)
     of 17:
       if wt == wtLen:
@@ -550,6 +559,9 @@ proc decodeFrom*(m: var Everything; r: var PbReader) {.raises: [ProtobufError], 
       if wt == wtVarint: m.fieldWithLargeNumber = r.getVarint()
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[Everything]): string = "codec.test.Everything"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: Everything): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its

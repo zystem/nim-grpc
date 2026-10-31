@@ -5,7 +5,7 @@ import grpc/protobuf
 import grpc/typed
 import "./empty_pb"
 import "./messages_pb"
-export options, tables, protobuf
+export protobuf
 export empty_pb
 export messages_pb
 export typed
@@ -23,70 +23,70 @@ type
   TestServiceHandlers* = object
     ## Server implementation of grpc.testing.TestService; methods left nil answer
     ## UNIMPLEMENTED.
-    emptyCall*: UnaryFn[Empty, Empty]
-    unaryCall*: UnaryFn[SimpleRequest, SimpleResponse]
-    cacheableUnaryCall*: UnaryFn[SimpleRequest, SimpleResponse]
-    streamingOutputCall*: ServerStreamFn[StreamingOutputCallRequest, StreamingOutputCallResponse]
-    streamingInputCall*: ClientStreamFn[StreamingInputCallRequest, StreamingInputCallResponse]
-    fullDuplexCall*: BidiFn[StreamingOutputCallRequest, StreamingOutputCallResponse]
-    halfDuplexCall*: BidiFn[StreamingOutputCallRequest, StreamingOutputCallResponse]
-    unimplementedCall*: UnaryFn[Empty, Empty]
+    emptyCall*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
+    unaryCall*: UnaryFn[messages_pb.SimpleRequest, messages_pb.SimpleResponse]
+    cacheableUnaryCall*: UnaryFn[messages_pb.SimpleRequest, messages_pb.SimpleResponse]
+    streamingOutputCall*: ServerStreamFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    streamingInputCall*: ClientStreamFn[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse]
+    fullDuplexCall*: BidiFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    halfDuplexCall*: BidiFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    unimplementedCall*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
 
 proc newTestServiceClient*(ch: GrpcChannel): TestServiceClient = TestServiceClient(ch: ch)
 
-proc emptyCall*(c: TestServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression).message
+proc emptyCall*(c: TestServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression).message
 
-proc emptyCallWithMetadata*(c: TestServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression)
+proc emptyCallWithMetadata*(c: TestServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression)
 
-proc unaryCall*(c: TestServiceClient; req: SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): SimpleResponse =
-  unaryCallTyped[SimpleRequest, SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression).message
+proc unaryCall*(c: TestServiceClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.SimpleResponse =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression).message
 
-proc unaryCallWithMetadata*(c: TestServiceClient; req: SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: SimpleResponse, headers, trailers: Metadata] =
-  unaryCallTyped[SimpleRequest, SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression)
+proc unaryCallWithMetadata*(c: TestServiceClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.SimpleResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression)
 
-proc cacheableUnaryCall*(c: TestServiceClient; req: SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): SimpleResponse =
-  unaryCallTyped[SimpleRequest, SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression).message
+proc cacheableUnaryCall*(c: TestServiceClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.SimpleResponse =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression).message
 
-proc cacheableUnaryCallWithMetadata*(c: TestServiceClient; req: SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: SimpleResponse, headers, trailers: Metadata] =
-  unaryCallTyped[SimpleRequest, SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression)
+proc cacheableUnaryCallWithMetadata*(c: TestServiceClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.SimpleResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression)
 
-proc streamingOutputCall*(c: TestServiceClient; req: StreamingOutputCallRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): ClientReader[StreamingOutputCallResponse] =
-  openReader[StreamingOutputCallRequest, StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/StreamingOutputCall", req, metadata, timeoutMs, compression)
+proc streamingOutputCall*(c: TestServiceClient; req: messages_pb.StreamingOutputCallRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): ClientReader[messages_pb.StreamingOutputCallResponse] =
+  openReader[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/StreamingOutputCall", req, metadata, timeoutMs, compression)
 
 proc streamingInputCall*(c: TestServiceClient; metadata: Metadata = @[]; timeoutMs = -1;
-    compression = ""): ClientWriter[StreamingInputCallRequest, StreamingInputCallResponse] =
-  openWriter[StreamingInputCallRequest, StreamingInputCallResponse](c.ch, "/grpc.testing.TestService/StreamingInputCall", metadata, timeoutMs, compression)
+    compression = ""): ClientWriter[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse] =
+  openWriter[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse](c.ch, "/grpc.testing.TestService/StreamingInputCall", metadata, timeoutMs, compression)
 
 proc fullDuplexCall*(c: TestServiceClient; metadata: Metadata = @[]; timeoutMs = -1;
-    compression = ""): ClientBidi[StreamingOutputCallRequest, StreamingOutputCallResponse] =
-  openBidi[StreamingOutputCallRequest, StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/FullDuplexCall", metadata, timeoutMs, compression)
+    compression = ""): ClientBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse] =
+  openBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/FullDuplexCall", metadata, timeoutMs, compression)
 
 proc halfDuplexCall*(c: TestServiceClient; metadata: Metadata = @[]; timeoutMs = -1;
-    compression = ""): ClientBidi[StreamingOutputCallRequest, StreamingOutputCallResponse] =
-  openBidi[StreamingOutputCallRequest, StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/HalfDuplexCall", metadata, timeoutMs, compression)
+    compression = ""): ClientBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse] =
+  openBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/HalfDuplexCall", metadata, timeoutMs, compression)
 
-proc unimplementedCall*(c: TestServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression).message
+proc unimplementedCall*(c: TestServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression).message
 
-proc unimplementedCallWithMetadata*(c: TestServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression)
+proc unimplementedCallWithMetadata*(c: TestServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression)
 
 proc registerTestService*(s: GrpcServer; h: TestServiceHandlers) =
   ## Adds the methods of grpc.testing.TestService that `h` implements.
-  if h.emptyCall != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.TestService/EmptyCall", h.emptyCall)
-  if h.unaryCall != nil: addTypedUnary[SimpleRequest, SimpleResponse](s, "/grpc.testing.TestService/UnaryCall", h.unaryCall)
-  if h.cacheableUnaryCall != nil: addTypedUnary[SimpleRequest, SimpleResponse](s, "/grpc.testing.TestService/CacheableUnaryCall", h.cacheableUnaryCall)
-  if h.streamingOutputCall != nil: addTypedServerStream[StreamingOutputCallRequest, StreamingOutputCallResponse](s, "/grpc.testing.TestService/StreamingOutputCall", h.streamingOutputCall)
-  if h.streamingInputCall != nil: addTypedClientStream[StreamingInputCallRequest, StreamingInputCallResponse](s, "/grpc.testing.TestService/StreamingInputCall", h.streamingInputCall)
-  if h.fullDuplexCall != nil: addTypedBidi[StreamingOutputCallRequest, StreamingOutputCallResponse](s, "/grpc.testing.TestService/FullDuplexCall", h.fullDuplexCall)
-  if h.halfDuplexCall != nil: addTypedBidi[StreamingOutputCallRequest, StreamingOutputCallResponse](s, "/grpc.testing.TestService/HalfDuplexCall", h.halfDuplexCall)
-  if h.unimplementedCall != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.TestService/UnimplementedCall", h.unimplementedCall)
+  if h.emptyCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.TestService/EmptyCall", h.emptyCall)
+  if h.unaryCall != nil: addTypedUnary[messages_pb.SimpleRequest, messages_pb.SimpleResponse](s, "/grpc.testing.TestService/UnaryCall", h.unaryCall)
+  if h.cacheableUnaryCall != nil: addTypedUnary[messages_pb.SimpleRequest, messages_pb.SimpleResponse](s, "/grpc.testing.TestService/CacheableUnaryCall", h.cacheableUnaryCall)
+  if h.streamingOutputCall != nil: addTypedServerStream[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/StreamingOutputCall", h.streamingOutputCall)
+  if h.streamingInputCall != nil: addTypedClientStream[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse](s, "/grpc.testing.TestService/StreamingInputCall", h.streamingInputCall)
+  if h.fullDuplexCall != nil: addTypedBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/FullDuplexCall", h.fullDuplexCall)
+  if h.halfDuplexCall != nil: addTypedBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/HalfDuplexCall", h.halfDuplexCall)
+  if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.TestService/UnimplementedCall", h.unimplementedCall)
 
 # ---------------------------------------------------------------- service grpc.testing.UnimplementedService
 
@@ -98,20 +98,20 @@ type
   UnimplementedServiceHandlers* = object
     ## Server implementation of grpc.testing.UnimplementedService; methods left nil answer
     ## UNIMPLEMENTED.
-    unimplementedCall*: UnaryFn[Empty, Empty]
+    unimplementedCall*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
 
 proc newUnimplementedServiceClient*(ch: GrpcChannel): UnimplementedServiceClient = UnimplementedServiceClient(ch: ch)
 
-proc unimplementedCall*(c: UnimplementedServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression).message
+proc unimplementedCall*(c: UnimplementedServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression).message
 
-proc unimplementedCallWithMetadata*(c: UnimplementedServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression)
+proc unimplementedCallWithMetadata*(c: UnimplementedServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression)
 
 proc registerUnimplementedService*(s: GrpcServer; h: UnimplementedServiceHandlers) =
   ## Adds the methods of grpc.testing.UnimplementedService that `h` implements.
-  if h.unimplementedCall != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.UnimplementedService/UnimplementedCall", h.unimplementedCall)
+  if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.UnimplementedService/UnimplementedCall", h.unimplementedCall)
 
 # ---------------------------------------------------------------- service grpc.testing.ReconnectService
 
@@ -123,29 +123,29 @@ type
   ReconnectServiceHandlers* = object
     ## Server implementation of grpc.testing.ReconnectService; methods left nil answer
     ## UNIMPLEMENTED.
-    start*: UnaryFn[ReconnectParams, Empty]
-    stop*: UnaryFn[Empty, ReconnectInfo]
+    start*: UnaryFn[messages_pb.ReconnectParams, empty_pb.Empty]
+    stop*: UnaryFn[empty_pb.Empty, messages_pb.ReconnectInfo]
 
 proc newReconnectServiceClient*(ch: GrpcChannel): ReconnectServiceClient = ReconnectServiceClient(ch: ch)
 
-proc start*(c: ReconnectServiceClient; req: ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[ReconnectParams, Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression).message
+proc start*(c: ReconnectServiceClient; req: messages_pb.ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[messages_pb.ReconnectParams, empty_pb.Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression).message
 
-proc startWithMetadata*(c: ReconnectServiceClient; req: ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[ReconnectParams, Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression)
+proc startWithMetadata*(c: ReconnectServiceClient; req: messages_pb.ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.ReconnectParams, empty_pb.Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression)
 
-proc stop*(c: ReconnectServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): ReconnectInfo =
-  unaryCallTyped[Empty, ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression).message
+proc stop*(c: ReconnectServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.ReconnectInfo =
+  unaryCallTyped[empty_pb.Empty, messages_pb.ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression).message
 
-proc stopWithMetadata*(c: ReconnectServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: ReconnectInfo, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression)
+proc stopWithMetadata*(c: ReconnectServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.ReconnectInfo, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, messages_pb.ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression)
 
 proc registerReconnectService*(s: GrpcServer; h: ReconnectServiceHandlers) =
   ## Adds the methods of grpc.testing.ReconnectService that `h` implements.
-  if h.start != nil: addTypedUnary[ReconnectParams, Empty](s, "/grpc.testing.ReconnectService/Start", h.start)
-  if h.stop != nil: addTypedUnary[Empty, ReconnectInfo](s, "/grpc.testing.ReconnectService/Stop", h.stop)
+  if h.start != nil: addTypedUnary[messages_pb.ReconnectParams, empty_pb.Empty](s, "/grpc.testing.ReconnectService/Start", h.start)
+  if h.stop != nil: addTypedUnary[empty_pb.Empty, messages_pb.ReconnectInfo](s, "/grpc.testing.ReconnectService/Stop", h.stop)
 
 # ---------------------------------------------------------------- service grpc.testing.LoadBalancerStatsService
 
@@ -157,29 +157,29 @@ type
   LoadBalancerStatsServiceHandlers* = object
     ## Server implementation of grpc.testing.LoadBalancerStatsService; methods left nil answer
     ## UNIMPLEMENTED.
-    getClientStats*: UnaryFn[LoadBalancerStatsRequest, LoadBalancerStatsResponse]
-    getClientAccumulatedStats*: UnaryFn[LoadBalancerAccumulatedStatsRequest, LoadBalancerAccumulatedStatsResponse]
+    getClientStats*: UnaryFn[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse]
+    getClientAccumulatedStats*: UnaryFn[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse]
 
 proc newLoadBalancerStatsServiceClient*(ch: GrpcChannel): LoadBalancerStatsServiceClient = LoadBalancerStatsServiceClient(ch: ch)
 
-proc getClientStats*(c: LoadBalancerStatsServiceClient; req: LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): LoadBalancerStatsResponse =
-  unaryCallTyped[LoadBalancerStatsRequest, LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression).message
+proc getClientStats*(c: LoadBalancerStatsServiceClient; req: messages_pb.LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.LoadBalancerStatsResponse =
+  unaryCallTyped[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression).message
 
-proc getClientStatsWithMetadata*(c: LoadBalancerStatsServiceClient; req: LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: LoadBalancerStatsResponse, headers, trailers: Metadata] =
-  unaryCallTyped[LoadBalancerStatsRequest, LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression)
+proc getClientStatsWithMetadata*(c: LoadBalancerStatsServiceClient; req: messages_pb.LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.LoadBalancerStatsResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression)
 
-proc getClientAccumulatedStats*(c: LoadBalancerStatsServiceClient; req: LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): LoadBalancerAccumulatedStatsResponse =
-  unaryCallTyped[LoadBalancerAccumulatedStatsRequest, LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression).message
+proc getClientAccumulatedStats*(c: LoadBalancerStatsServiceClient; req: messages_pb.LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.LoadBalancerAccumulatedStatsResponse =
+  unaryCallTyped[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression).message
 
-proc getClientAccumulatedStatsWithMetadata*(c: LoadBalancerStatsServiceClient; req: LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: LoadBalancerAccumulatedStatsResponse, headers, trailers: Metadata] =
-  unaryCallTyped[LoadBalancerAccumulatedStatsRequest, LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression)
+proc getClientAccumulatedStatsWithMetadata*(c: LoadBalancerStatsServiceClient; req: messages_pb.LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.LoadBalancerAccumulatedStatsResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression)
 
 proc registerLoadBalancerStatsService*(s: GrpcServer; h: LoadBalancerStatsServiceHandlers) =
   ## Adds the methods of grpc.testing.LoadBalancerStatsService that `h` implements.
-  if h.getClientStats != nil: addTypedUnary[LoadBalancerStatsRequest, LoadBalancerStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientStats", h.getClientStats)
-  if h.getClientAccumulatedStats != nil: addTypedUnary[LoadBalancerAccumulatedStatsRequest, LoadBalancerAccumulatedStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", h.getClientAccumulatedStats)
+  if h.getClientStats != nil: addTypedUnary[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientStats", h.getClientStats)
+  if h.getClientAccumulatedStats != nil: addTypedUnary[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", h.getClientAccumulatedStats)
 
 # ---------------------------------------------------------------- service grpc.testing.HookService
 
@@ -191,38 +191,38 @@ type
   HookServiceHandlers* = object
     ## Server implementation of grpc.testing.HookService; methods left nil answer
     ## UNIMPLEMENTED.
-    hook*: UnaryFn[Empty, Empty]
-    setReturnStatus*: UnaryFn[SetReturnStatusRequest, Empty]
-    clearReturnStatus*: UnaryFn[Empty, Empty]
+    hook*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
+    setReturnStatus*: UnaryFn[messages_pb.SetReturnStatusRequest, empty_pb.Empty]
+    clearReturnStatus*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
 
 proc newHookServiceClient*(ch: GrpcChannel): HookServiceClient = HookServiceClient(ch: ch)
 
-proc hook*(c: HookServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression).message
+proc hook*(c: HookServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression).message
 
-proc hookWithMetadata*(c: HookServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression)
+proc hookWithMetadata*(c: HookServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression)
 
-proc setReturnStatus*(c: HookServiceClient; req: SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[SetReturnStatusRequest, Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression).message
+proc setReturnStatus*(c: HookServiceClient; req: messages_pb.SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[messages_pb.SetReturnStatusRequest, empty_pb.Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression).message
 
-proc setReturnStatusWithMetadata*(c: HookServiceClient; req: SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[SetReturnStatusRequest, Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression)
+proc setReturnStatusWithMetadata*(c: HookServiceClient; req: messages_pb.SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.SetReturnStatusRequest, empty_pb.Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression)
 
-proc clearReturnStatus*(c: HookServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression).message
+proc clearReturnStatus*(c: HookServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression).message
 
-proc clearReturnStatusWithMetadata*(c: HookServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression)
+proc clearReturnStatusWithMetadata*(c: HookServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression)
 
 proc registerHookService*(s: GrpcServer; h: HookServiceHandlers) =
   ## Adds the methods of grpc.testing.HookService that `h` implements.
-  if h.hook != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.HookService/Hook", h.hook)
-  if h.setReturnStatus != nil: addTypedUnary[SetReturnStatusRequest, Empty](s, "/grpc.testing.HookService/SetReturnStatus", h.setReturnStatus)
-  if h.clearReturnStatus != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.HookService/ClearReturnStatus", h.clearReturnStatus)
+  if h.hook != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.HookService/Hook", h.hook)
+  if h.setReturnStatus != nil: addTypedUnary[messages_pb.SetReturnStatusRequest, empty_pb.Empty](s, "/grpc.testing.HookService/SetReturnStatus", h.setReturnStatus)
+  if h.clearReturnStatus != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.HookService/ClearReturnStatus", h.clearReturnStatus)
 
 # ---------------------------------------------------------------- service grpc.testing.XdsUpdateHealthService
 
@@ -234,38 +234,38 @@ type
   XdsUpdateHealthServiceHandlers* = object
     ## Server implementation of grpc.testing.XdsUpdateHealthService; methods left nil answer
     ## UNIMPLEMENTED.
-    setServing*: UnaryFn[Empty, Empty]
-    setNotServing*: UnaryFn[Empty, Empty]
-    sendHookRequest*: UnaryFn[HookRequest, HookResponse]
+    setServing*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
+    setNotServing*: UnaryFn[empty_pb.Empty, empty_pb.Empty]
+    sendHookRequest*: UnaryFn[messages_pb.HookRequest, messages_pb.HookResponse]
 
 proc newXdsUpdateHealthServiceClient*(ch: GrpcChannel): XdsUpdateHealthServiceClient = XdsUpdateHealthServiceClient(ch: ch)
 
-proc setServing*(c: XdsUpdateHealthServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression).message
+proc setServing*(c: XdsUpdateHealthServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression).message
 
-proc setServingWithMetadata*(c: XdsUpdateHealthServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression)
+proc setServingWithMetadata*(c: XdsUpdateHealthServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression)
 
-proc setNotServing*(c: XdsUpdateHealthServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Empty =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression).message
+proc setNotServing*(c: XdsUpdateHealthServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): empty_pb.Empty =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression).message
 
-proc setNotServingWithMetadata*(c: XdsUpdateHealthServiceClient; req: Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: Empty, headers, trailers: Metadata] =
-  unaryCallTyped[Empty, Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression)
+proc setNotServingWithMetadata*(c: XdsUpdateHealthServiceClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: empty_pb.Empty, headers, trailers: Metadata] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression)
 
-proc sendHookRequest*(c: XdsUpdateHealthServiceClient; req: HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): HookResponse =
-  unaryCallTyped[HookRequest, HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression).message
+proc sendHookRequest*(c: XdsUpdateHealthServiceClient; req: messages_pb.HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.HookResponse =
+  unaryCallTyped[messages_pb.HookRequest, messages_pb.HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression).message
 
-proc sendHookRequestWithMetadata*(c: XdsUpdateHealthServiceClient; req: HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: HookResponse, headers, trailers: Metadata] =
-  unaryCallTyped[HookRequest, HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression)
+proc sendHookRequestWithMetadata*(c: XdsUpdateHealthServiceClient; req: messages_pb.HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.HookResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.HookRequest, messages_pb.HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression)
 
 proc registerXdsUpdateHealthService*(s: GrpcServer; h: XdsUpdateHealthServiceHandlers) =
   ## Adds the methods of grpc.testing.XdsUpdateHealthService that `h` implements.
-  if h.setServing != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.XdsUpdateHealthService/SetServing", h.setServing)
-  if h.setNotServing != nil: addTypedUnary[Empty, Empty](s, "/grpc.testing.XdsUpdateHealthService/SetNotServing", h.setNotServing)
-  if h.sendHookRequest != nil: addTypedUnary[HookRequest, HookResponse](s, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", h.sendHookRequest)
+  if h.setServing != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.XdsUpdateHealthService/SetServing", h.setServing)
+  if h.setNotServing != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.XdsUpdateHealthService/SetNotServing", h.setNotServing)
+  if h.sendHookRequest != nil: addTypedUnary[messages_pb.HookRequest, messages_pb.HookResponse](s, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", h.sendHookRequest)
 
 # ---------------------------------------------------------------- service grpc.testing.XdsUpdateClientConfigureService
 
@@ -277,17 +277,17 @@ type
   XdsUpdateClientConfigureServiceHandlers* = object
     ## Server implementation of grpc.testing.XdsUpdateClientConfigureService; methods left nil answer
     ## UNIMPLEMENTED.
-    configure*: UnaryFn[ClientConfigureRequest, ClientConfigureResponse]
+    configure*: UnaryFn[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse]
 
 proc newXdsUpdateClientConfigureServiceClient*(ch: GrpcChannel): XdsUpdateClientConfigureServiceClient = XdsUpdateClientConfigureServiceClient(ch: ch)
 
-proc configure*(c: XdsUpdateClientConfigureServiceClient; req: ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): ClientConfigureResponse =
-  unaryCallTyped[ClientConfigureRequest, ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression).message
+proc configure*(c: XdsUpdateClientConfigureServiceClient; req: messages_pb.ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): messages_pb.ClientConfigureResponse =
+  unaryCallTyped[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression).message
 
-proc configureWithMetadata*(c: XdsUpdateClientConfigureServiceClient; req: ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
-    tuple[message: ClientConfigureResponse, headers, trailers: Metadata] =
-  unaryCallTyped[ClientConfigureRequest, ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression)
+proc configureWithMetadata*(c: XdsUpdateClientConfigureServiceClient; req: messages_pb.ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    tuple[message: messages_pb.ClientConfigureResponse, headers, trailers: Metadata] =
+  unaryCallTyped[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression)
 
 proc registerXdsUpdateClientConfigureService*(s: GrpcServer; h: XdsUpdateClientConfigureServiceHandlers) =
   ## Adds the methods of grpc.testing.XdsUpdateClientConfigureService that `h` implements.
-  if h.configure != nil: addTypedUnary[ClientConfigureRequest, ClientConfigureResponse](s, "/grpc.testing.XdsUpdateClientConfigureService/Configure", h.configure)
+  if h.configure != nil: addTypedUnary[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](s, "/grpc.testing.XdsUpdateClientConfigureService/Configure", h.configure)

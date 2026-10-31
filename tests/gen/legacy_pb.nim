@@ -2,13 +2,13 @@
 {.push warning[UnusedImport]: off.}
 import std/[options, tables]
 import grpc/protobuf
-export options, tables, protobuf
+export protobuf
 {.pop.}
 
 type
   Legacy* = object
-    a*: Option[int32]
-    b*: Option[string]
+    a*: options.Option[int32]
+    b*: options.Option[string]
     unpacked*: seq[int32]
     packed*: seq[int32]
     next*: ref Legacy
@@ -49,10 +49,10 @@ proc decodeFrom*(m: var Legacy; r: var PbReader) {.raises: [ProtobufError], gcsa
     r.getTag(field, wt)
     case field
     of 1:
-      if wt == wtVarint: m.a = some(cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64)))
+      if wt == wtVarint: m.a = options.some(cast[int32](uint32(r.getVarint() and 0xffff_ffff'u64)))
       else: r.skipField(wt, field)
     of 2:
-      if wt == wtLen: m.b = some(r.getString())
+      if wt == wtLen: m.b = options.some(r.getString())
       else: r.skipField(wt, field)
     of 3:
       if wt == wtLen:
@@ -73,6 +73,9 @@ proc decodeFrom*(m: var Legacy; r: var PbReader) {.raises: [ProtobufError], gcsa
         decodeFrom(m.next[], sub)
       else: r.skipField(wt, field)
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[Legacy]): string = "codec.legacy.Legacy"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: Legacy): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its

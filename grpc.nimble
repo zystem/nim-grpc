@@ -9,7 +9,8 @@ installExt    = @["nim", "c"]
 requires "nim >= 2.2.12", "bearssl >= 0.3.1"
 
 const tests = ["tests/th2session.nim", "tests/tblocking.nim", "tests/tgrpc.nim",
-               "tests/ttls.nim", "tests/tcodec.nim", "tests/tkeepalive.nim"]
+               "tests/ttls.nim", "tests/tcodec.nim", "tests/tkeepalive.nim",
+               "tests/twkt.nim"]
 
 proc runAll(flags, tag: string) =
   # A separate nimcache per flag set: Nim reuses C objects across --passC changes.

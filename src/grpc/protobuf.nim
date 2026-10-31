@@ -3,8 +3,6 @@
 ## Generated messages call these procs; applications normally use only the
 ## generated `encode` / `decode`. Unknown fields are skipped on decode.
 
-import std/tables
-export tables
 
 type
   ProtobufError* = object of CatchableError

@@ -2,7 +2,7 @@
 {.push warning[UnusedImport]: off.}
 import std/[options, tables]
 import grpc/protobuf
-export options, tables, protobuf
+export protobuf
 {.pop.}
 
 type
@@ -29,6 +29,9 @@ proc decodeFrom*(m: var Empty; r: var PbReader) {.raises: [ProtobufError], gcsaf
     r.getTag(field, wt)
     case field
     else: r.skipField(wt, field)
+
+func protoName*(_: typedesc[Empty]): string = "grpc.testing.Empty"
+  ## The fully qualified Protobuf name (for google.protobuf.Any).
 
 proc encode*(m: Empty): seq[byte] {.raises: [], gcsafe.} =
   ## The wire form of `m`. A message-typed field is written when its
