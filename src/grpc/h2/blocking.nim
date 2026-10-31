@@ -656,6 +656,43 @@ proc isClosed*(st: ServerStream): bool =
   result = c.closed or st.id notin c.streams or c.streamPtr(st.id).closed
   release(c.lock)
 
+proc deadlinePassed*(st: ServerStream): bool =
+  ## True if the stream has a deadline and it is now past.
+  if not st.hasDeadline: return false
+  var now: Timespec
+  discard clock_gettime(CLOCK_REALTIME, now)
+  now.tv_sec.int > st.deadline.tv_sec.int or
+    (now.tv_sec.int == st.deadline.tv_sec.int and now.tv_nsec >= st.deadline.tv_nsec)
+
+proc remainingMs*(st: ServerStream): int =
+  ## Milliseconds until the deadline (at least 0), or -1 without one.
+  if not st.hasDeadline: return -1
+  var now: Timespec
+  discard clock_gettime(CLOCK_REALTIME, now)
+  let ms = (st.deadline.tv_sec.int - now.tv_sec.int) * 1000 +
+           (st.deadline.tv_nsec.int - now.tv_nsec.int) div 1_000_000
+  max(ms, 0)
+
+proc waitClosed*(st: ServerStream; ms: int): bool =
+  ## Waits up to `ms` (or until the deadline, if sooner) for the stream to
+  ## close. True if it closed (cancelled by the client, connection gone,
+  ## server stopping); false if the time ran out first. Wakes up as soon as
+  ## the stream closes rather than at the end of `ms`.
+  let c = st.conn
+  var limit = ms
+  let left = st.remainingMs
+  if left >= 0 and left < limit: limit = left
+  let until = deadlineIn(max(limit, 0))
+  acquire(c.lock)
+  while true:
+    if c.closed or st.id notin c.streams or c.streamPtr(st.id).closed:
+      result = true
+      break
+    if not waitUntil(c.cond, c.lock, until):
+      result = c.closed or st.id notin c.streams or c.streamPtr(st.id).closed
+      break
+  release(c.lock)
+
 proc sendHeaders*(st: var ServerStream; headers: openArray[Header]; endStream = false) =
   ## The response HEADERS. With `endStream` nothing else follows
   ## (a gRPC trailers-only response).

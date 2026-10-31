@@ -28,6 +28,7 @@ type
     responseCompression*: string
       ## "gzip" to compress responses; set before the first message is sent.
       ## Ignored if the client does not accept gzip.
+    stream: ptr ServerStream
 
   ServerCall* = object
     st: ptr ServerStream
@@ -149,6 +150,41 @@ proc isCancelled*(call: ServerCall): bool =
   ## True once the client has gone away or reset the call.
   call.st[].isClosed
 
+# ---------------------------------------------------------------- cancellation
+#
+# A handler runs on a thread nothing can interrupt, and `stop` waits for it.
+# Long handlers should therefore notice when their call is over: the client
+# cancelled or went away, the deadline passed, or the server is stopping
+# (once the grace period ends the server closes the connections). Use
+# `ctx.sleep` instead of `os.sleep`, and `ctx.checkCancelled()` in loops.
+
+proc isCancelled*(ctx: ServerContext): bool =
+  ## True once the call is over for the client: it cancelled, the
+  ## connection closed (including a server `stop`), or the deadline passed.
+  if ctx.stream == nil: return false
+  ctx.stream[].isClosed or ctx.stream[].deadlinePassed
+
+proc remainingMs*(ctx: ServerContext): int =
+  ## Milliseconds left until the client's deadline, or -1 without one.
+  if ctx.stream == nil: -1 else: ctx.stream[].remainingMs
+
+proc checkCancelled*(ctx: ServerContext) =
+  ## Raises GrpcError if the call is over: DEADLINE_EXCEEDED once the
+  ## deadline passed, CANCELLED otherwise. Returns normally while the call
+  ## is still on.
+  if ctx.stream == nil: return
+  if ctx.stream[].deadlinePassed:
+    raise newGrpcError(scDeadlineExceeded, "deadline exceeded")
+  if ctx.stream[].isClosed:
+    raise newGrpcError(scCancelled, "call cancelled")
+
+proc sleep*(ctx: ServerContext; ms: int) =
+  ## Like `os.sleep`, but wakes up and raises (see `checkCancelled`) as soon
+  ## as the call is over, instead of keeping the worker for the full `ms`.
+  if ctx.stream == nil: return
+  discard ctx.stream[].waitClosed(ms)
+  ctx.checkCancelled()
+
 proc finishCall(call: var ServerCall; code: StatusCode; msg: string; md: Metadata) =
   ## Ends the call with a status: trailers after a response, or trailers-only.
   var hs: seq[Header]
@@ -191,6 +227,7 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
   except H2Error:
     return
   st.setTimeout(ctx.timeoutMs)
+  ctx.stream = st.addr
   ctx.metadata = fromWire(st.headers)
   var call = ServerCall(st: st.addr, ctx: ctx.addr, maxMessage: reg.maxMessage,
                         reqEncoding: encoding, clientAcceptsGzip: acceptsGzip)

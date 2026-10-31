@@ -87,9 +87,24 @@ server sends GOAWAY. Calls still running on the old connection finish there.
 quiet connection and closes it if the PING goes unanswered. Servers take a
 `keepalive` too, and a `pingPolicy` (gRPC's enforcement: too frequent pings
 earn GOAWAY ENHANCE_YOUR_CALM "too_many_pings"). `srv.stop(graceMs = 5000)`
-sends GOAWAY and lets running calls finish before closing; `stop` also waits
-for handlers to return, so long handlers should watch `isCancelled` or their
-deadline.
+sends GOAWAY and lets running calls finish before closing.
+
+Cancellation: a handler's thread cannot be interrupted, and `stop` waits for
+handlers to return. Long handlers should therefore notice when their call is
+over (the client cancelled or left, the deadline passed, or the server is
+stopping):
+
+```nim
+proc export(ctx: var ServerContext; req: ExportRequest;
+            output: var ServerWriter[Chunk]) {.nimcall, gcsafe.} =
+  for part in parts(req):
+    ctx.checkCancelled()        # raises CANCELLED / DEADLINE_EXCEEDED once over
+    output.send part
+    ctx.sleep(100)              # like os.sleep, but wakes up when the call ends
+```
+
+`ctx.isCancelled` and `ctx.remainingMs` give the same information without
+raising.
 
 Streaming: the server handler gets a `ServerCall`, the client opens a
 `ClientCall`.

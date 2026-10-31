@@ -1,13 +1,20 @@
 ## Keepalive, ping enforcement, graceful shutdown and reconnecting channels.
 
-import std/[unittest, net, os, times, typedthreads]
+import std/[unittest, net, os, times, typedthreads, atomics]
 import grpc
 import ./gen/grpc/testing/test_pb
 
+var handlerEndedMs: Atomic[int64]   ## when the last slowUnary returned or raised
+
+proc nowMs(): int64 = int64(epochTime() * 1000)
+
 proc slowUnary(ctx: var ServerContext; req: SimpleRequest): SimpleResponse
     {.nimcall, gcsafe.} =
-  ## Sleeps `responseSize` ms, then answers.
-  sleep(req.responseSize)
+  ## Waits `responseSize` ms (waking early if the call ends), then answers.
+  try:
+    ctx.sleep(req.responseSize)
+  finally:
+    handlerEndedMs.store(nowMs())
   SimpleResponse(payload: Payload(body: @[1'u8]))
 
 proc echoBidi(ctx: var ServerContext;
@@ -126,12 +133,15 @@ suite "graceful shutdown and reconnect":
     createThread(th, caller, (ch.addr, code.addr, failedAt.addr))
     sleep(50)
     let t0 = epochTime()
-    # `stop` itself also waits for the handler to return (a thread cannot be
-    # interrupted); the client is cut off when the grace period ends.
+    # The handler waits with ctx.sleep, so when the grace period ends and the
+    # connection closes it wakes up, and `stop` (which waits for handlers)
+    # returns promptly instead of after the full 2 s.
     srv.stop(graceMs = 200)
+    let stopped = epochTime()
     joinThread(th)
     check code == scUnavailable
     check failedAt - t0 < 1.0
+    check stopped - t0 < 1.0
     ch.close()
 
   test "the channel reconnects after the server restarts":
@@ -144,5 +154,54 @@ suite "graceful shutdown and reconnect":
     check codeOf(proc () = discard svc.unaryCall(SimpleRequest())) == scUnavailable
     srv = newSlowServer(port)
     check svc.unaryCall(SimpleRequest()).payload.body == @[1'u8]
+    ch.close()
+    srv.stop()
+
+suite "cancellation in handlers":
+  test "a client cancel wakes a sleeping handler":
+    let srv = newSlowServer()
+    let ch = dial("127.0.0.1", srv.port)
+    var call = ch.newCall("/grpc.testing.TestService/UnaryCall", timeoutMs = 10_000)
+    call.send SimpleRequest(responseSize: 5000).encode
+    call.closeSend()
+    sleep(100)
+    handlerEndedMs.store(0)
+    let t0 = nowMs()
+    call.cancel()
+    call.close()
+    while handlerEndedMs.load == 0 and nowMs() - t0 < 3000: sleep(5)
+    check handlerEndedMs.load != 0
+    check handlerEndedMs.load - t0 < 500
+    ch.close()
+    srv.stop()
+
+  test "the deadline wakes a sleeping handler":
+    let srv = newSlowServer()
+    let ch = dial("127.0.0.1", srv.port)
+    handlerEndedMs.store(0)
+    let t0 = nowMs()
+    let code = codeOf(proc () =
+      discard newTestServiceClient(ch).unaryCall(SimpleRequest(responseSize: 5000),
+                                                 timeoutMs = 200))
+    check code == scDeadlineExceeded
+    while handlerEndedMs.load == 0 and nowMs() - t0 < 3000: sleep(5)
+    check handlerEndedMs.load - t0 < 700
+    ch.close()
+    srv.stop()
+
+  test "checkCancelled and remainingMs":
+    proc probe(ctx: var ServerContext; req: SimpleRequest): SimpleResponse
+        {.nimcall, gcsafe.} =
+      # Reports what the context says, as the payload: [remaining > 0, cancelled]
+      let left = ctx.remainingMs
+      ctx.checkCancelled()              # still on: returns normally
+      SimpleResponse(payload: Payload(body: @[byte(left > 0 and left <= 1000),
+                                              byte(ctx.isCancelled)]))
+    let srv = newGrpcServer()
+    srv.registerTestService(TestServiceHandlers(unaryCall: probe))
+    srv.start()
+    let ch = dial("127.0.0.1", srv.port)
+    let r = newTestServiceClient(ch).unaryCall(SimpleRequest(), timeoutMs = 1000)
+    check r.payload.body == @[1'u8, 0]
     ch.close()
     srv.stop()

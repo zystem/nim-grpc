@@ -50,7 +50,7 @@ proc streamingOutputCall(ctx: var ServerContext; req: StreamingOutputCallRequest
   for p in req.responseParameters:
     if p.compressed.value: ctx.responseCompression = "gzip"
   for p in req.responseParameters:
-    if p.intervalUs > 0: sleep(p.intervalUs div 1000)
+    if p.intervalUs > 0: ctx.sleep(p.intervalUs div 1000)
     output.send(StreamingOutputCallResponse(payload: zeros(p.size)), p.compressed.value)
 
 proc streamingInputCall(ctx: var ServerContext;
@@ -74,7 +74,7 @@ proc fullDuplexCall(ctx: var ServerContext;
     echoStatus(req.responseStatus)
     for p in req.responseParameters:
       if p.compressed.value: ctx.responseCompression = "gzip"
-      if p.intervalUs > 0: sleep(p.intervalUs div 1000)
+      if p.intervalUs > 0: ctx.sleep(p.intervalUs div 1000)
       call.send(StreamingOutputCallResponse(payload: zeros(p.size)), p.compressed.value)
 
 proc newTestServer*(port = 0; tls: TlsConfig = nil): GrpcServer =
