@@ -5,21 +5,35 @@
 ## `recv` until it returns false. A non-OK status is raised as GrpcError from
 ## whichever call observes the end of the stream.
 ##
-## A `GrpcChannel` may be shared by many threads (pass a `ptr GrpcChannel`);
-## each call is its own HTTP/2 stream. A `ClientCall` belongs to one thread
-## and must not outlive its channel.
+## A `GrpcChannel` is a small handle that may be copied and used from many
+## threads; each call is its own HTTP/2 stream on the channel's connection.
+## When that connection closes or the server sends GOAWAY, the next call
+## dials a new one; calls still running on the old connection finish there.
+## A `ClientCall` belongs to one thread and must not outlive its channel.
 
-import std/strutils
-import ./status, ./wire, ./h2/blocking, ./compress/gzip
-export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
+import std/[strutils, locks]
+import ./status, ./wire, ./h2/blocking, ./compress/gzip, ./cleanup
+export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig,
+       blocking.TlsError, blocking.Keepalive
 
 const userAgent = "grpc-nim/0.0.1"
 
 type
-  GrpcChannel* = object
-    conn: Conn
+  ChannelObj* = object
+    lock: Lock
+    host*: string
+    port*: int
+    tls*: TlsConfig
+    serverName*: string
+    keepalive: Keepalive
     authority: string
     scheme: string
+    conn: Conn              ## the connection new calls use
+    retired: seq[Conn]      ## replaced connections, closed once idle
+    closed: bool
+
+  GrpcChannel* = object
+    p*: ptr ChannelObj      ## shared; freed by `close`
 
   ClientCall* = object
     st: ClientStream
@@ -41,23 +55,71 @@ type
     headers*: Metadata
     trailers*: Metadata
 
-proc dial*(host: string; port: int; tls: TlsConfig = nil; serverName = ""): GrpcChannel =
-  ## Without `tls`: plaintext HTTP/2 (h2c) with prior knowledge. With it:
-  ## TLS 1.2 with ALPN h2; the server certificate must match `serverName`
-  ## (default `host`; DNS names only, so use a name such as "localhost"
-  ## rather than an IP address). Raises GrpcError(UNAVAILABLE) if the server
-  ## cannot be reached; a failed handshake is reported by the first call.
-  var conn: Conn
+proc connect(c: ptr ChannelObj): Conn =
   var why = ""
   try:
-    conn = blocking.dial(host, Port(port), tls, serverName)
+    result = blocking.dial(c.host, Port(c.port), c.tls, c.serverName, c.keepalive)
   except CatchableError as e:
     why = e.msg
   if why.len > 0: raise newGrpcError(scUnavailable, why)
-  GrpcChannel(conn: conn, authority: (if serverName.len > 0: serverName else: host) & ":" & $port,
-              scheme: if tls != nil: "https" else: "http")
 
-proc close*(ch: GrpcChannel) = ch.conn.close()
+proc dial*(host: string; port: int; tls: TlsConfig = nil; serverName = "";
+           keepalive = Keepalive()): GrpcChannel =
+  ## Without `tls`: plaintext HTTP/2 (h2c) with prior knowledge. With it:
+  ## TLS 1.2 with ALPN h2; the server certificate must match `serverName`
+  ## (default `host`; DNS names only, so use a name such as "localhost"
+  ## rather than an IP address). Connects right away and raises
+  ## GrpcError(UNAVAILABLE) if the server cannot be reached; a failed
+  ## handshake is reported by the first call. Later connections are made on
+  ## demand.
+  let c = createShared(ChannelObj)
+  initLock(c.lock)
+  c.host = host
+  c.port = port
+  c.tls = tls
+  c.serverName = serverName
+  c.keepalive = keepalive
+  c.authority = (if serverName.len > 0: serverName else: host) & ":" & $port
+  c.scheme = if tls != nil: "https" else: "http"
+  var why: ref GrpcError
+  try:
+    c.conn = c.connect()
+  except GrpcError as e:
+    why = e
+  if why != nil:
+    `=destroy`(c[])
+    deinitLock(c.lock)
+    deallocShared(c)
+    raise why
+  GrpcChannel(p: c)
+
+proc close*(ch: GrpcChannel) =
+  ## Closes every connection of the channel and frees it. Calls still in
+  ## progress fail; the channel and its copies must not be used afterwards.
+  let c = ch.p
+  acquire(c.lock)
+  c.closed = true
+  if c.conn != nil: c.conn.close()
+  for r in c.retired: r.close()
+  release(c.lock)
+  `=destroy`(c[])
+  deinitLock(c.lock)
+  deallocShared(c)
+
+proc connectionLocked(c: ptr ChannelObj): Conn =
+  ## The connection for a new call, redialling if the current one is closed
+  ## or going away. Replaced connections are closed once no call uses them.
+  if c.closed: raise newGrpcError(scUnavailable, "channel closed")
+  var keep: seq[Conn]
+  for r in c.retired:
+    if r.activeStreams == 0: r.close()
+    else: keep.add r
+  c.retired = keep
+  if c.conn == nil or not c.conn.isUsable:
+    if c.conn != nil: c.retired.add c.conn
+    c.conn = nil
+    c.conn = c.connect()
+  c.conn
 
 proc rstToStatus(code: uint32): StatusCode =
   case code
@@ -76,8 +138,9 @@ proc newCall*(ch: GrpcChannel; path: string; metadata: Metadata = @[];
   ## `maxMessage` limits them after decompression.
   if compression notin ["", "identity", "gzip"]:
     raise newGrpcError(scInvalidArgument, "unsupported compression " & compression.escape)
-  var headers = @[(":method", "POST"), (":scheme", ch.scheme), (":path", path),
-                  (":authority", ch.authority), ("content-type", grpcContentType),
+  let c = ch.p
+  var headers = @[(":method", "POST"), (":scheme", c.scheme), (":path", path),
+                  (":authority", c.authority), ("content-type", grpcContentType),
                   ("te", "trailers"), ("user-agent", userAgent), acceptEncodingHeader]
   if compression == "gzip": headers.add ("grpc-encoding", "gzip")
   if timeoutMs >= 0: headers.add ("grpc-timeout", encodeTimeout(timeoutMs))
@@ -85,10 +148,22 @@ proc newCall*(ch: GrpcChannel; path: string; metadata: Metadata = @[];
   result.maxMessage = maxMessage
   result.gzipOut = compression == "gzip"
   var why = ""
+  acquire(c.lock)
   try:
-    result.st = ch.conn.openStream(headers, timeoutMs)
-  except H2Error as e:
+    # A connection can turn out to be going away between the check and the
+    # stream: then try once more on a fresh one.
+    for attempt in 0 .. 1:
+      let conn = c.connectionLocked()
+      try:
+        result.st = conn.openStream(headers, timeoutMs)
+        why = ""
+        break
+      except H2Error as e:
+        why = e.msg
+  except GrpcError as e:
     why = e.msg
+  finally:
+    release(c.lock)
   if why.len > 0: raise newGrpcError(scUnavailable, why)
 
 proc close*(call: var ClientCall) =
@@ -244,15 +319,17 @@ proc unaryCall*(ch: GrpcChannel; path: string; request: openArray[byte];
   ## Sends one message and returns the one reply. Raises GrpcError for any
   ## status other than OK.
   var call = ch.newCall(path, metadata, timeoutMs, maxMessage, compression)
-  try:
+  var res: UnaryResult
+  withCleanup:
     call.send(request)
     call.closeSend()
-    if not call.recv(result.message):
+    if not call.recv(res.message):
       raise newGrpcError(scInternal, "unary call ended without a response")
     var extra: seq[byte]
     if call.recv(extra):
       raise newGrpcError(scInternal, "unary call got more than one response")
-    result.headers = call.headers
-    result.trailers = call.trailers
-  finally:
+    res.headers = call.headers
+    res.trailers = call.trailers
+  do:
     call.close()
+  res

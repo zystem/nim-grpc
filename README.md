@@ -4,7 +4,8 @@ gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
 **Status:** early. Unary and streaming calls (client-, server- and
 bidirectional) work, client and server, over plaintext HTTP/2, TLS and mutual
-TLS, with optional gzip message compression. 18 interop cases pass against
+TLS, with optional gzip message compression, keepalive, graceful shutdown and
+reconnecting channels. 18 interop cases pass against
 grpc-go in both directions in each mode
 ([docs/interop.md](docs/interop.md)), with the Nim side written against code
 generated from the official interop protos. The HTTP/2 layer passes 135 of 146
@@ -80,6 +81,16 @@ message, or per message with `send(msg, compressed)`); handlers set
 `maxMessage` limits a message after decompression, so a small compressed
 message cannot expand without bound.
 
+Connections: a channel redials on demand after its connection closes or the
+server sends GOAWAY. Calls still running on the old connection finish there.
+`dial(..., keepalive = Keepalive(timeMs: 10_000, timeoutMs: 2000))` pings a
+quiet connection and closes it if the PING goes unanswered. Servers take a
+`keepalive` too, and a `pingPolicy` (gRPC's enforcement: too frequent pings
+earn GOAWAY ENHANCE_YOUR_CALM "too_many_pings"). `srv.stop(graceMs = 5000)`
+sends GOAWAY and lets running calls finish before closing; `stop` also waits
+for handlers to return, so long handlers should watch `isCancelled` or their
+deadline.
+
 Streaming: the server handler gets a `ServerCall`, the client opens a
 `ClientCall`.
 
@@ -154,6 +165,14 @@ nimble tsan   # the same under ThreadSanitizer
 6. chronos adapter
 7. Code generation from `.proto` — done
 8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
+9. Keepalive, GOAWAY handling, graceful shutdown, reconnect — done
+
+## Nim compiler
+
+Nim 2.2.12 and 2.2.14 can lose an exception passing through `finally` or
+`defer` (2.2.6 does not). The library works around it, and code using it should
+too: see [docs/nim-compiler-notes.md](docs/nim-compiler-notes.md). All tests
+pass on both 2.2.12 and 2.2.14.
 
 ## Footprint
 

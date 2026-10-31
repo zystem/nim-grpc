@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	_ "google.golang.org/grpc/encoding/gzip"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
 	"google.golang.org/grpc/metadata"
@@ -27,6 +28,7 @@ import (
 )
 
 var probe = new(bool)
+var kaSeconds = new(int)
 
 var (
 	reqSizes  = []int{27182, 8, 1828, 45904}
@@ -147,6 +149,23 @@ func expectCode(err error, want codes.Code, wantMsg string) error {
 }
 
 var cases = []testCase{
+	{"keepalive_idle", func(ctx context.Context, cc *grpc.ClientConn) error {
+		// Not an official case: with -keepalive N the channel pings an idle
+		// server; the connection must survive and the next call work.
+		if *kaSeconds == 0 {
+			return nil
+		}
+		c := testpb.NewTestServiceClient(cc)
+		if _, err := c.EmptyCall(ctx, &testpb.Empty{}); err != nil {
+			return err
+		}
+		time.Sleep(time.Duration(*kaSeconds*2+1) * time.Second)
+		if s := cc.GetState().String(); s != "READY" && s != "IDLE" {
+			return fmt.Errorf("connection state %s after pinging", s)
+		}
+		_, err := c.EmptyCall(ctx, &testpb.Empty{})
+		return err
+	}},
 	{"empty_unary", func(ctx context.Context, cc *grpc.ClientConn) error {
 		r, err := testpb.NewTestServiceClient(cc).EmptyCall(ctx, &testpb.Empty{})
 		if err != nil {
@@ -488,7 +507,14 @@ func runClient(addr, only string, tc *tls.Config) int {
 	if tc != nil {
 		creds = credentials.NewTLS(tc)
 	}
-	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if *kaSeconds > 0 {
+		// grpc-go does not ping more often than every 10 s.
+		opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time: time.Duration(*kaSeconds) * time.Second, Timeout: 2 * time.Second,
+			PermitWithoutStream: true}))
+	}
+	cc, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		fmt.Println("dial:", err)
 		return 2
@@ -499,7 +525,7 @@ func runClient(addr, only string, tc *tls.Config) int {
 		if only != "" && !strings.Contains(","+only+",", ","+tc.name+",") {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		err := tc.run(ctx, cc)
 		cancel()
 		if err != nil {
@@ -519,6 +545,7 @@ func main() {
 	mode := flag.String("tls", "", "\"\", \"tls\" or \"mtls\"")
 	certs := flag.String("certs", "certs", "directory with ca.pem, server.*, client.*")
 	flag.BoolVar(probe, "probe", true, "run the compression probes (the server must check expect_compressed)")
+	flag.IntVar(kaSeconds, "keepalive", 0, "client keepalive time in seconds (0: off)")
 	flag.Parse()
 	if *role == "server" {
 		lis, err := net.Listen("tcp", *addr)

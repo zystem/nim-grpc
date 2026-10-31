@@ -29,9 +29,15 @@ type
     hd*: Nghttp2FrameHd
     cat*: cint
 
+  Nghttp2GoawayFrame* {.importc: "nghttp2_goaway", header: h, bycopy.} = object
+    hd*: Nghttp2FrameHd
+    last_stream_id*: int32
+    error_code*: uint32
+
   Nghttp2Frame* {.importc: "nghttp2_frame", header: h, union, bycopy.} = object
     hd*: Nghttp2FrameHd
     headers*: Nghttp2HeadersFrame
+    goaway*: Nghttp2GoawayFrame
 
   Nghttp2Nv* {.importc: "nghttp2_nv", header: h, bycopy.} = object
     name*: ptr uint8
@@ -68,10 +74,12 @@ const
   NGHTTP2_DATA* = 0'u8
   NGHTTP2_HEADERS* = 1'u8
   NGHTTP2_RST_STREAM* = 3'u8
+  NGHTTP2_PING* = 6'u8
   NGHTTP2_GOAWAY* = 7'u8
 
   NGHTTP2_FLAG_NONE* = 0'u8
   NGHTTP2_FLAG_END_STREAM* = 0x01'u8
+  NGHTTP2_FLAG_ACK* = 0x01'u8
 
   NGHTTP2_NV_FLAG_NONE* = 0'u8
 
@@ -85,6 +93,7 @@ const
   NGHTTP2_PROTOCOL_ERROR* = 1'u32
   NGHTTP2_INTERNAL_ERROR* = 2'u32
   NGHTTP2_CANCEL* = 8'u32
+  NGHTTP2_ENHANCE_YOUR_CALM* = 11'u32
 
 {.push importc, header: h, cdecl.}
 proc nghttp2_session_callbacks_new*(cbs: ptr ptr Nghttp2SessionCallbacks): cint
@@ -128,6 +137,10 @@ proc nghttp2_submit_rst_stream*(session: ptr Nghttp2Session; flags: uint8;
 proc nghttp2_submit_goaway*(session: ptr Nghttp2Session; flags: uint8;
   lastStreamId: int32; errorCode: uint32; opaqueData: ptr uint8; len: csize_t): cint
 proc nghttp2_session_get_last_proc_stream_id*(session: ptr Nghttp2Session): int32
+proc nghttp2_submit_ping*(session: ptr Nghttp2Session; flags: uint8;
+  opaqueData: ptr uint8): cint
+proc nghttp2_submit_shutdown_notice*(session: ptr Nghttp2Session): cint
+proc nghttp2_session_check_request_allowed*(session: ptr Nghttp2Session): cint
 
 proc nghttp2_strerror*(libErrorCode: cint): cstring
 {.pop.}

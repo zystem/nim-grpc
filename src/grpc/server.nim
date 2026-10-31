@@ -14,7 +14,8 @@
 
 import std/[tables, strutils]
 import ./status, ./wire, ./h2/blocking, ./compress/gzip
-export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
+export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig,
+       blocking.TlsError, blocking.Keepalive, blocking.PingPolicy
 
 type
   ServerContext* = object
@@ -224,13 +225,16 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
 # ---------------------------------------------------------------- server
 
 proc newGrpcServer*(port = 0; address = "127.0.0.1"; maxWorkers = 256;
-                    maxMessage = defaultMaxMessage; tls: TlsConfig = nil): GrpcServer =
+                    maxMessage = defaultMaxMessage; tls: TlsConfig = nil;
+                    keepalive = Keepalive(); pingPolicy = PingPolicy()): GrpcServer =
   ## At most `maxWorkers` calls run at once; more wait for a free worker.
   ## With `tls` (see `tlsServerConfig`) clients must use TLS 1.2 with ALPN h2.
+  ## `keepalive` pings idle clients; `pingPolicy` limits how often clients
+  ## may ping (gRPC's enforcement policy; off by default).
   result = GrpcServer()
   result.reg.maxMessage = maxMessage
   result.h2 = newStreamServer(handle, result.reg.addr, Port(port), address,
-                              maxWorkers, tls)
+                              maxWorkers, tls, keepalive, pingPolicy)
 
 proc addUnaryRaw*(s: GrpcServer; path: string; handler: RawUnaryHandler;
                   userData: pointer) =
@@ -263,4 +267,7 @@ proc start*(s: GrpcServer) =
   s.started = true
   s.h2.start()
 
-proc stop*(s: GrpcServer) = s.h2.stop()
+proc stop*(s: GrpcServer; graceMs = 0) =
+  ## Stops the server. With `graceMs` > 0 clients get GOAWAY and calls in
+  ## progress may finish for up to that long before they are cancelled.
+  s.h2.stop(graceMs)

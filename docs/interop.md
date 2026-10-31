@@ -52,6 +52,15 @@ probes and the checks that a message is *not* compressed. Nim to Nim runs
 every check. The grpc-go client runs the probes against the Nim server, and
 they pass.
 
+Keepalive, beyond the official suite:
+
+- A grpc-go client with keepalive (10 s, the minimum grpc-go allows) against an
+  idle Nim server: the PINGs are acknowledged, and the connection stays READY.
+- A Nim client pinging every 50 ms against a grpc-go server with the default
+  enforcement policy: grpc-go sends GOAWAY too_many_pings, the open call fails
+  with UNAVAILABLE, and the next call goes over a new connection
+  (`interop client ... keepalive_enforced`).
+
 Not covered yet: the Google auth cases (they need Google credentials), and the
 load-balancing and xDS cases.
 

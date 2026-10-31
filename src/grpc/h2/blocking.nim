@@ -19,7 +19,7 @@
 ## count is touched from two threads.
 
 import std/[locks, net, tables, deques, os, posix, atomics]
-import ./session, ../tls/tls
+import ./session, ../tls/tls, ../cleanup
 
 export session.Header, session.H2Error, net.Port, tls
 
@@ -36,6 +36,26 @@ type
 
   H2StreamClosed* = object of H2Error
     ## The stream is gone (reset by the peer, or the connection closed).
+
+  Keepalive* = object
+    ## Connection health checks with HTTP/2 PING (gRPC's keepalive).
+    timeMs*: int
+      ## Send a PING after this long without receiving anything; 0 turns
+      ## keepalive off.
+    timeoutMs*: int
+      ## Close the connection if the PING is not acknowledged within this
+      ## time (default 20 s when 0).
+    withoutCalls*: bool
+      ## Client: ping also while no call is in progress.
+
+  PingPolicy* = object
+    ## Server: what clients may do with PINGs (gRPC's enforcement policy).
+    minIntervalMs*: int
+      ## Pings closer together than this count as strikes; after more than
+      ## two the connection gets GOAWAY ENHANCE_YOUR_CALM "too_many_pings".
+      ## 0 turns enforcement off.
+    permitWithoutCalls*: bool
+      ## Pings while no call is in progress are allowed (else they are strikes).
 
   StreamState = object
     blocks: seq[seq[Header]]   ## HEADERS blocks received
@@ -65,6 +85,14 @@ type
     plainOut: seq[byte]   ## TLS: session output the engine has not taken yet
     tlsIn: seq[byte]      ## TLS: records the engine has not taken yet
     ioRunning: int        ## reader/writer loops still running for this connection
+    ka: Keepalive
+    policy: PingPolicy
+    lastReadNs: int64     ## monotonic time of the last bytes read
+    pingOutstanding: bool
+    pingSentNs: int64
+    lastPingRecvNs: int64
+    pingStrikes: int
+    goawayReceived: bool  ## client: no new streams on this connection
   Conn* = ref ConnObj
 
   # ---- server side
@@ -108,6 +136,8 @@ type
     simple: RequestHandler   ## set when built from a whole-request handler
     simpleData: pointer
     tls: TlsConfig        ## nil for plaintext
+    ka: Keepalive
+    policy: PingPolicy
   Server* = ref ServerObj
 
   # ---- whole-request convenience API
@@ -180,6 +210,11 @@ proc deadlineIn*(ms: int): Timespec =
   let ns = result.tv_nsec.int + (ms mod 1000) * 1_000_000
   result.tv_sec = posix.Time(result.tv_sec.int + ms div 1000 + ns div 1_000_000_000)
   result.tv_nsec = ns mod 1_000_000_000
+
+proc nowNs(): int64 =
+  var t: Timespec
+  discard clock_gettime(CLOCK_MONOTONIC, t)
+  t.tv_sec.int64 * 1_000_000_000 + t.tv_nsec.int64
 
 proc waitUntil(c: var Cond; l: var Lock; deadline: Timespec): bool =
   ## False once the deadline has passed.
@@ -292,6 +327,25 @@ proc handleEventsLocked(c: ptr ConnObj) =
         st.closed = true
         st.errorCode = ev.errorCode
         if isServer and not st.handled: c.streams.del(ev.streamId)
+    of evGoAway:
+      c.goawayReceived = true
+    of evPingAck:
+      c.pingOutstanding = false
+    of evPing:
+      if isServer and c.policy.minIntervalMs > 0:
+        let now = nowNs()
+        let idle = c.streams.len == 0
+        if (idle and not c.policy.permitWithoutCalls) or
+           (c.lastPingRecvNs != 0 and
+            now - c.lastPingRecvNs < c.policy.minIntervalMs.int64 * 1_000_000):
+          inc c.pingStrikes
+        c.lastPingRecvNs = now
+        if c.pingStrikes > 2:
+          c.sess.goAway(11, "too_many_pings")   # ENHANCE_YOUR_CALM
+          c.outQBytes = 0
+          c.queueOutputLocked()
+          c.failLocked("client sent too many pings")
+    if ev.kind in {evHeaders, evData}: c.pingStrikes = 0
   broadcast(c.cond)
 
 proc pumpTlsInLocked(c: ptr ConnObj) =
@@ -333,6 +387,7 @@ proc readerLoop(c: ptr ConnObj) =
         c.failLocked(if n == 0: "connection closed by peer" else: "read error")
         release(c.lock)
         break
+      c.lastReadNs = nowNs()
       try:
         if c.tls == nil:
           c.sess.recv(buf.toOpenArray(0, n - 1))
@@ -352,13 +407,44 @@ proc readerLoop(c: ptr ConnObj) =
       release(c.lock)
       if stop: break
 
+proc keepaliveLocked(c: ptr ConnObj): int =
+  ## Sends a due PING or closes a connection whose PING went unanswered.
+  ## Returns how long to wait (ms) before checking again, or -1 for no limit.
+  if c.ka.timeMs <= 0 or c.closed: return -1
+  let now = nowNs()
+  let timeoutNs = (if c.ka.timeoutMs > 0: c.ka.timeoutMs else: 20_000).int64 * 1_000_000
+  if c.pingOutstanding:
+    let due = c.pingSentNs + timeoutNs
+    if now >= due:
+      c.failLocked("keepalive: no response to PING within " &
+                   $(timeoutNs div 1_000_000) & " ms")
+      return -1
+    return int((due - now) div 1_000_000) + 1
+  let due = c.lastReadNs + c.ka.timeMs.int64 * 1_000_000
+  if now < due: return int((due - now) div 1_000_000) + 1
+  let calls = c.streams.len > 0
+  if calls or c.ka.withoutCalls or c.server != nil:
+    try:
+      c.sess.ping()
+      c.pingOutstanding = true
+      c.pingSentNs = now
+      c.queueOutputLocked()
+    except CatchableError as e:
+      c.failLocked(e.msg)
+      return -1
+    return int(timeoutNs div 1_000_000) + 1
+  c.ka.timeMs                       # idle and not allowed to ping: look again later
+
 proc writerLoop(c: ptr ConnObj) =
   defer: c.ioDone()
   block:
     while true:
       acquire(c.lock)
       while c.outQ.len == 0 and not c.closed:
-        wait(c.cond, c.lock)
+        let waitMs = c.keepaliveLocked()
+        if c.outQ.len > 0 or c.closed: break
+        if waitMs < 0: wait(c.cond, c.lock)
+        else: discard waitUntil(c.cond, c.lock, deadlineIn(waitMs))
       if c.outQ.len == 0:           # closed and drained
         release(c.lock)
         break
@@ -392,7 +478,7 @@ proc writerLoop(c: ptr ConnObj) =
     discard posix.shutdown(c.sock.getFd, SHUT_RDWR)
 
 proc newConn(sock: Socket; sess: H2Session; server: ptr ServerObj): Conn =
-  result = Conn(sock: sock, sess: sess, server: server)
+  result = Conn(sock: sock, sess: sess, server: server, lastReadNs: nowNs())
   initLock(result.lock)
   initCond(result.cond)
   result.outQ = initDeque[seq[byte]]()
@@ -683,12 +769,13 @@ proc simpleTrampoline(st: var ServerStream; userData: pointer)
 
 proc newStreamServer*(handler: StreamHandler; userData: pointer = nil;
                       port = Port(0); address = "127.0.0.1";
-                      maxWorkers = 256; tls: TlsConfig = nil): Server =
+                      maxWorkers = 256; tls: TlsConfig = nil;
+                      keepalive = Keepalive(); pingPolicy = PingPolicy()): Server =
   ## Every request stream gets a worker thread for as long as its handler
   ## runs; the pool grows on demand up to `maxWorkers` threads. With `tls`
   ## connections must speak TLS 1.2 with ALPN h2.
   result = Server(handler: handler, userData: userData, maxWorkers: maxWorkers,
-                  tls: tls)
+                  tls: tls, ka: keepalive, policy: pingPolicy)
   initLock(result.jobLock)
   initCond(result.jobCond)
   result.jobs = initDeque[Job]()
@@ -737,6 +824,8 @@ proc acceptLoop(s: ptr ServerObj) {.thread.} =
       client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
       s.reap()
       let c = newConn(client, newServerSession(), s)
+      c.ka = s.ka
+      c.policy = s.policy
       if s.tls != nil:
         try:
           c.tls = newServerTls(s.tls)
@@ -750,11 +839,44 @@ proc start*(s: Server) =
   ## Accepts connections on a background thread.
   createThread(s.acceptor, acceptLoop, s[].addr)
 
-proc stop*(s: Server) =
+proc stop*(s: Server; graceMs = 0) =
+  ## Stops accepting connections and closes the open ones. With `graceMs`
+  ## > 0 the shutdown is graceful: clients get GOAWAY (first a notice, then
+  ## the final one), calls already started may finish for up to `graceMs`,
+  ## and only then are connections closed and the remaining calls cancelled.
   s.stopping.store(true)
   discard posix.shutdown(s.listener.getFd, SHUT_RDWR)
   joinThread(s.acceptor)
   s.listener.close()
+  if graceMs > 0 and s.conns.len > 0:
+    var busy = false
+    for c in s.conns:
+      acquire(c.lock)
+      if not c.closed:
+        try:
+          c.sess.shutdownNotice()
+          c.queueOutputLocked()
+        except CatchableError: discard
+        busy = busy or c.streams.len > 0
+      release(c.lock)
+    # The notice reaches clients that may be opening streams right now; the
+    # final GOAWAY, about a round trip later, fixes the last stream served.
+    if busy: sleep(min(100, graceMs))
+    for c in s.conns:
+      acquire(c.lock)
+      if not c.closed:
+        try:
+          c.sess.goAway()
+          c.queueOutputLocked()
+        except CatchableError: discard
+      release(c.lock)
+    let deadline = nowNs() + graceMs.int64 * 1_000_000
+    for c in s.conns:
+      acquire(c.lock)
+      while not c.closed and (c.pending > 0 or c.streams.len > 0) and nowNs() < deadline:
+        discard waitUntil(c.cond, c.lock, deadlineIn(
+          max(1, int((deadline - nowNs()) div 1_000_000))))
+      release(c.lock)
   for c in s.conns: c.stopThreads()   # streams close; handlers see it and return
   acquire(s.jobLock)
   s.workersDone = true                # workers drain the queue, then exit
@@ -776,7 +898,19 @@ proc isClosed*(c: Conn): bool =
   result = c.closed
   release(c.lock)
 
-proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = ""): Conn =
+proc isUsable*(c: Conn): bool =
+  ## Open, and the server has not sent GOAWAY: new streams may be started.
+  acquire(c.lock)
+  result = not c.closed and not c.goawayReceived and c.sess.requestAllowed
+  release(c.lock)
+
+proc activeStreams*(c: Conn): int =
+  acquire(c.lock)
+  result = c.streams.len
+  release(c.lock)
+
+proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = "";
+           keepalive = Keepalive()): Conn =
   ## Without `tls`: HTTP/2 with prior knowledge (h2c). With it: TLS 1.2,
   ## ALPN h2, the server's certificate checked against `serverName` (default:
   ## `host`; DNS names only). A failed handshake shows up as an error on the
@@ -785,6 +919,7 @@ proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = ""): Con
   sock.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
   sock.connect(host, port)
   result = newConn(sock, newClientSession(), nil)
+  result.ka = keepalive
   if tls != nil:
     result.tlsConf = tls
     result.tls = newClientTls(tls, if serverName.len > 0: serverName else: host)
@@ -801,6 +936,8 @@ proc openStream*(c: Conn; headers: openArray[Header]; timeoutMs = -1): ClientStr
   try:
     if c.closed:
       raise newException(H2StreamClosed, "connection closed: " & c.failure)
+    if c.goawayReceived or not c.sess.requestAllowed:
+      raise newException(H2StreamClosed, "connection is going away (GOAWAY)")
     result.id = c.sess.submitRequest(headers)
     c.streams[result.id] = StreamState()
     c.queueOutputLocked()
@@ -920,21 +1057,24 @@ proc request*(c: Conn; headers: openArray[Header]; body: openArray[byte] = [];
   ## H2StreamClosed, a passed deadline H2Timeout.
   var st = c.openStream(headers, timeoutMs)
   var failure: ref H2StreamClosed
-  try:
-    st.send(body, endStream = true)
-    result.headers = st.recvHeaders()
-    var chunk: seq[byte]
-    while st.recvData(chunk): result.body.add chunk
-    result.trailers = st.recvTrailers()
-  except H2StreamClosed as e:
-    acquire(c.lock)
-    let s = c.streamPtr(st.id)
-    let resetByPeer = s != nil and s.errorCode != 0 and not c.closed
-    if resetByPeer:
-      result.errorCode = s.errorCode
-      if result.headers.len == 0 and s.blocks.len > 0: result.headers = s.blocks[0]
-    release(c.lock)
-    if not resetByPeer: failure = e
-  finally:
+  var res: Response
+  withCleanup:
+    try:
+      st.send(body, endStream = true)
+      res.headers = st.recvHeaders()
+      var chunk: seq[byte]
+      while st.recvData(chunk): res.body.add chunk
+      res.trailers = st.recvTrailers()
+    except H2StreamClosed as e:
+      acquire(c.lock)
+      let s = c.streamPtr(st.id)
+      let resetByPeer = s != nil and s.errorCode != 0 and not c.closed
+      if resetByPeer:
+        res.errorCode = s.errorCode
+        if res.headers.len == 0 and s.blocks.len > 0: res.headers = s.blocks[0]
+      release(c.lock)
+      if not resetByPeer: failure = e
+  do:
     st.release()
   if failure != nil: raise failure
+  res

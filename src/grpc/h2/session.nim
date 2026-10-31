@@ -25,6 +25,9 @@ type
     evHeaders      ## a complete HEADERS block (request, response or trailers)
     evData         ## the payload of one DATA frame
     evStreamClosed ## the stream is gone; `errorCode` is 0 on a clean close
+    evGoAway       ## the peer sent GOAWAY (`streamId` is its last stream id)
+    evPing         ## the peer sent a PING (nghttp2 has queued the ACK)
+    evPingAck      ## the peer acknowledged one of our PINGs
 
   H2Event* = object
     streamId*: int32
@@ -35,8 +38,10 @@ type
     of evData:
       data*: seq[byte]
       dataEndStream*: bool
-    of evStreamClosed:
+    of evStreamClosed, evGoAway:
       errorCode*: uint32
+    of evPing, evPingAck:
+      discard
 
   OutStreamObj = object
     buf: seq[byte]
@@ -121,6 +126,14 @@ proc onFrameRecv(session: ptr Nghttp2Session; frame: ptr Nghttp2Frame;
     discard s.inData.pop(id, d)
     s.events.add H2Event(streamId: id, kind: evData, data: move d,
                          dataEndStream: endStream)
+  of NGHTTP2_GOAWAY:
+    s.events.add H2Event(streamId: frame.goaway.last_stream_id, kind: evGoAway,
+                         errorCode: frame.goaway.error_code)
+  of NGHTTP2_PING:
+    if (frame.hd.flags and NGHTTP2_FLAG_ACK) != 0:
+      s.events.add H2Event(kind: evPingAck)
+    else:
+      s.events.add H2Event(kind: evPing)
   else: discard
   0
 
@@ -302,7 +315,25 @@ proc resetStream*(s: H2Session; streamId: int32; errorCode = NGHTTP2_CANCEL) =
   let rv = nghttp2_submit_rst_stream(s.raw, NGHTTP2_FLAG_NONE, streamId, errorCode)
   if rv != 0: raiseH2(rv, "submit_rst_stream")
 
-proc goAway*(s: H2Session; errorCode = NGHTTP2_NO_ERROR) =
+proc ping*(s: H2Session) =
+  let rv = nghttp2_submit_ping(s.raw, NGHTTP2_FLAG_NONE, nil)
+  if rv != 0: raiseH2(rv, "submit_ping")
+
+proc shutdownNotice*(s: H2Session) =
+  ## Server: the first, advisory GOAWAY of a graceful shutdown; streams
+  ## already opened by the client in the meantime are still served.
+  let rv = nghttp2_submit_shutdown_notice(s.raw)
+  if rv != 0: raiseH2(rv, "submit_shutdown_notice")
+
+proc requestAllowed*(s: H2Session): bool =
+  ## Client: false once a new stream cannot be opened (GOAWAY received or sent).
+  nghttp2_session_check_request_allowed(s.raw) != 0
+
+proc goAway*(s: H2Session; errorCode = NGHTTP2_NO_ERROR; debug = "") =
+  ## GOAWAY naming the last stream this side processed. `debug` goes in the
+  ## frame's opaque data (gRPC uses "too_many_pings").
   let last = nghttp2_session_get_last_proc_stream_id(s.raw)
-  let rv = nghttp2_submit_goaway(s.raw, NGHTTP2_FLAG_NONE, last, errorCode, nil, 0)
+  let rv = nghttp2_submit_goaway(s.raw, NGHTTP2_FLAG_NONE, last, errorCode,
+                                 if debug.len > 0: cast[ptr uint8](debug.cstring) else: nil,
+                                 debug.len.csize_t)
   if rv != 0: raiseH2(rv, "submit_goaway")

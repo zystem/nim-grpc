@@ -42,7 +42,7 @@ suite "h2 session":
       of evData:
         reqBody.add ev.data.toStr
         reqEnded = reqEnded or ev.dataEndStream
-      of evStreamClosed: discard
+      else: discard
     check reqHeaders.header(":path") == "/pkg.Svc/Method"
     check reqBody == "hello"
     check reqEnded
@@ -62,6 +62,7 @@ suite "h2 session":
       of evStreamClosed:
         closed = true
         check ev.errorCode == 0
+      else: discard
     check blocks.len == 2
     check blocks[0].header(":status") == "200"
     check blocks[1].header("grpc-status") == "0"

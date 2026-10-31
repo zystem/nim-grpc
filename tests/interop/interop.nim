@@ -6,7 +6,7 @@
 ##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR] [--lenient-compression]
 
 import std/[os, strutils]
-import grpc
+import grpc, grpc/cleanup
 import ../gen/grpc/testing/test_pb
 
 const
@@ -89,15 +89,21 @@ proc newTestServer*(port = 0; tls: TlsConfig = nil): GrpcServer =
 
 proc expectCode(f: proc () {.raises: [CatchableError].}; want: StatusCode;
                 wantMsg = "") =
+  var raised = false
+  var code = scOk
+  var msg = ""
   try:
     f()
   except GrpcError as e:
-    if e.code != want:
-      raise newException(ValueError, "code " & $e.code & " (" & e.msg & "), want " & $want)
-    if wantMsg.len > 0 and e.msg != wantMsg:
-      raise newException(ValueError, "message " & e.msg.escape & ", want " & wantMsg.escape)
-    return
-  raise newException(ValueError, "call succeeded, want " & $want)
+    raised = true
+    code = e.code
+    msg = e.msg
+  if not raised:
+    raise newException(ValueError, "call succeeded, want " & $want)
+  if code != want:
+    raise newException(ValueError, "code " & $code & " (" & msg & "), want " & $want)
+  if wantMsg.len > 0 and msg != wantMsg:
+    raise newException(ValueError, "message " & msg.escape & ", want " & wantMsg.escape)
 
 proc check(cond: bool; what: string) =
   if not cond: raise newException(ValueError, what)
@@ -134,13 +140,15 @@ proc runCase*(ch: GrpcChannel; name: string) =
     expectCode(proc () = discard svc.unaryCall(SimpleRequest(responseStatus: st)),
                scUnknown, msg)
     if name == "status_code_and_message":
-      expectCode(proc () =
-        var call = svc.fullDuplexCall(timeoutMs = 10_000)
-        defer: call.close()
-        call.send outReq([], status = st)
-        call.closeSend()
-        var m: StreamingOutputCallResponse
-        while call.recv(m): discard, scUnknown, msg)
+      var call = svc.fullDuplexCall(timeoutMs = 10_000)
+      withCleanup:
+        expectCode(proc () =
+          call.send outReq([], status = st)
+          call.closeSend()
+          var m: StreamingOutputCallResponse
+          while call.recv(m): discard, scUnknown, msg)
+      do:
+        call.close()
   of "unimplemented_method":
     expectCode(proc () = discard svc.unimplementedCall(Empty()), scUnimplemented)
   of "unimplemented_service":
@@ -156,42 +164,52 @@ proc runCase*(ch: GrpcChannel; name: string) =
           "unary initial metadata " & $r.headers
     check r.trailers.get(trailingKey) == bin, "unary trailing metadata " & $r.trailers
     var call = svc.fullDuplexCall(md, timeoutMs = 10_000)
-    defer: call.close()
-    call.send outReq([314159'i32], payload = 271828)
-    call.closeSend()
-    check call.recv(resp), "no duplex response"
-    check resp.payload.body.len == 314159, "duplex payload size"
-    check not call.recv(resp), "extra duplex response"
-    check call.headers.get(initialKey) == "test_initial_metadata_value",
-          "duplex initial metadata " & $call.headers
-    check call.trailers.get(trailingKey) == bin, "duplex trailing metadata"
+    withCleanup:
+      call.send outReq([314159'i32], payload = 271828)
+      call.closeSend()
+      check call.recv(resp), "no duplex response"
+      check resp.payload.body.len == 314159, "duplex payload size"
+      check not call.recv(resp), "extra duplex response"
+      check call.headers.get(initialKey) == "test_initial_metadata_value",
+            "duplex initial metadata " & $call.headers
+      check call.trailers.get(trailingKey) == bin, "duplex trailing metadata"
+    do:
+      call.close()
   of "client_streaming":
     var call = svc.streamingInputCall(timeoutMs = 10_000)
-    defer: call.close()
-    for n in reqSizes: call.send StreamingInputCallRequest(payload: zeros(n))
-    let total = call.closeAndRecv().aggregatedPayloadSize
-    check total == 74922, "aggregated " & $total
+    withCleanup:
+      for n in reqSizes: call.send StreamingInputCallRequest(payload: zeros(n))
+      let total = call.closeAndRecv().aggregatedPayloadSize
+      check total == 74922, "aggregated " & $total
+    do:
+      call.close()
   of "server_streaming":
     var call = svc.streamingOutputCall(outReq(respSizes), timeoutMs = 10_000)
-    defer: call.close()
-    for n in respSizes:
-      check call.recv(resp), "stream ended early"
-      check resp.payload.body.len == n, "size " & $resp.payload.body.len & ", want " & $n
-    check not call.recv(resp), "extra response"
+    withCleanup:
+      for n in respSizes:
+        check call.recv(resp), "stream ended early"
+        check resp.payload.body.len == n, "size " & $resp.payload.body.len & ", want " & $n
+      check not call.recv(resp), "extra response"
+    do:
+      call.close()
   of "ping_pong":
     var call = svc.fullDuplexCall(timeoutMs = 10_000)
-    defer: call.close()
-    for i in 0 ..< reqSizes.len:
-      call.send outReq([respSizes[i]], payload = reqSizes[i])
-      check call.recv(resp), "no response to request " & $i
-      check resp.payload.body.len == respSizes[i], "size " & $resp.payload.body.len
-    call.closeSend()
-    check not call.recv(resp), "extra response"
+    withCleanup:
+      for i in 0 ..< reqSizes.len:
+        call.send outReq([respSizes[i]], payload = reqSizes[i])
+        check call.recv(resp), "no response to request " & $i
+        check resp.payload.body.len == respSizes[i], "size " & $resp.payload.body.len
+      call.closeSend()
+      check not call.recv(resp), "extra response"
+    do:
+      call.close()
   of "empty_stream":
     var call = svc.fullDuplexCall(timeoutMs = 10_000)
-    defer: call.close()
-    call.closeSend()
-    check not call.recv(resp), "response on an empty stream"
+    withCleanup:
+      call.closeSend()
+      check not call.recv(resp), "response on an empty stream"
+    do:
+      call.close()
   of "cancel_after_begin":
     var call = svc.streamingInputCall(timeoutMs = 10_000)
     call.cancel()
@@ -204,10 +222,12 @@ proc runCase*(ch: GrpcChannel; name: string) =
     expectCode(proc () = discard call.recv(resp), scCancelled)
   of "timeout_on_sleeping_server":
     var call = svc.fullDuplexCall(timeoutMs = 1)
-    defer: call.close()
-    expectCode(proc () =
-      call.send outReq([], payload = 27182)
-      while call.recv(resp): discard, scDeadlineExceeded)
+    withCleanup:
+      expectCode(proc () =
+        call.send outReq([], payload = 27182)
+        while call.recv(resp): discard, scDeadlineExceeded)
+    do:
+      call.close()
   of "client_compressed_unary":
     let req = SimpleRequest(responseSize: 314159, payload: zeros(271828),
                             expectCompressed: BoolValue(value: true))
@@ -222,44 +242,67 @@ proc runCase*(ch: GrpcChannel; name: string) =
   of "server_compressed_unary":
     for compressed in [true, false]:
       var call = svc.ch.newCall("/grpc.testing.TestService/UnaryCall", timeoutMs = 10_000)
-      defer: call.close()
-      call.send SimpleRequest(responseSize: 314159,
-                              responseCompressed: BoolValue(value: compressed)).encode
-      call.closeSend()
-      var raw: seq[byte]
-      check call.recv(raw), "no response"
-      check SimpleResponse.decode(raw).payload.body.len == 314159, "payload size"
-      if compressed or strictCompression:
-        check call.lastCompressed == compressed,
-              "response compressed: " & $call.lastCompressed & ", want " & $compressed
-      check not call.recv(raw), "extra response"
+      withCleanup:
+        call.send SimpleRequest(responseSize: 314159,
+                                responseCompressed: BoolValue(value: compressed)).encode
+        call.closeSend()
+        var raw: seq[byte]
+        check call.recv(raw), "no response"
+        check SimpleResponse.decode(raw).payload.body.len == 314159, "payload size"
+        if compressed or strictCompression:
+          check call.lastCompressed == compressed,
+                "response compressed: " & $call.lastCompressed & ", want " & $compressed
+        check not call.recv(raw), "extra response"
+      do:
+        call.close()
   of "client_compressed_streaming":
     if strictCompression:
-      expectCode(proc () =
-        var probe = svc.streamingInputCall(timeoutMs = 10_000)
-        defer: probe.close()
-        probe.send StreamingInputCallRequest(payload: zeros(27182),
-                                             expectCompressed: BoolValue(value: true))
-        discard probe.closeAndRecv(), scInvalidArgument)
+      var probe = svc.streamingInputCall(timeoutMs = 10_000)
+      withCleanup:
+        expectCode(proc () =
+          probe.send StreamingInputCallRequest(payload: zeros(27182),
+                                               expectCompressed: BoolValue(value: true))
+          discard probe.closeAndRecv(), scInvalidArgument)
+      do:
+        probe.close()
     var call = svc.streamingInputCall(timeoutMs = 10_000, compression = "gzip")
-    defer: call.close()
-    call.send(StreamingInputCallRequest(payload: zeros(27182),
-                                        expectCompressed: BoolValue(value: true)), true)
-    call.send(StreamingInputCallRequest(payload: zeros(45904)), false)
-    let total = call.closeAndRecv().aggregatedPayloadSize
-    check total == 73086, "aggregated " & $total
+    withCleanup:
+      call.send(StreamingInputCallRequest(payload: zeros(27182),
+                                          expectCompressed: BoolValue(value: true)), true)
+      call.send(StreamingInputCallRequest(payload: zeros(45904)), false)
+      let total = call.closeAndRecv().aggregatedPayloadSize
+      check total == 73086, "aggregated " & $total
+    do:
+      call.close()
   of "server_compressed_streaming":
     var req = StreamingOutputCallRequest()
     req.responseParameters.add ResponseParameters(size: 31415, compressed: BoolValue(value: true))
     req.responseParameters.add ResponseParameters(size: 92653, compressed: BoolValue(value: false))
     var call = svc.streamingOutputCall(req, timeoutMs = 10_000)
-    defer: call.close()
-    check call.recv(resp), "no first response"
-    check resp.payload.body.len == 31415 and call.lastCompressed, "first: compressed 31415"
-    check call.recv(resp), "no second response"
-    check resp.payload.body.len == 92653, "second: size"
-    if strictCompression: check not call.lastCompressed, "second must not be compressed"
-    check not call.recv(resp), "extra response"
+    withCleanup:
+      check call.recv(resp), "no first response"
+      check resp.payload.body.len == 31415 and call.lastCompressed, "first: compressed 31415"
+      check call.recv(resp), "no second response"
+      check resp.payload.body.len == 92653, "second: size"
+      if strictCompression: check not call.lastCompressed, "second must not be compressed"
+      check not call.recv(resp), "extra response"
+    do:
+      call.close()
+  of "keepalive_enforced":
+    # Not an official case: a channel pinging every 50 ms during a quiet call.
+    # A server enforcing gRPC's default policy (one ping per 5 min) answers
+    # with GOAWAY too_many_pings; the call fails UNAVAILABLE and the next call
+    # works over a new connection.
+    let fast = dial(ch.p.host, ch.p.port, ch.p.tls, ch.p.serverName,
+                    Keepalive(timeMs: 50, timeoutMs: 2000))
+    withCleanup:
+      let fsvc = newTestServiceClient(fast)
+      var call = fsvc.fullDuplexCall(timeoutMs = 10_000)
+      expectCode(proc () = discard call.recv(resp), scUnavailable)
+      call.close()
+      discard fsvc.emptyCall(Empty(), timeoutMs = 10_000)
+    do:
+      fast.close()
   else:
     raise newException(ValueError, "unknown case " & name)
 
@@ -276,8 +319,7 @@ proc runClient*(host: string; port: int; only: seq[string] = @[];
                 tls: TlsConfig = nil; serverName = ""): int =
   ## Returns the number of failed cases.
   let ch = dial(host, port, tls, serverName)
-  for name in allCases:
-    if only.len > 0 and name notin only: continue
+  for name in (if only.len > 0: only else: @allCases):
     try:
       ch.runCase(name)
       echo "PASS ", name
