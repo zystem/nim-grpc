@@ -14,7 +14,7 @@
 
 import std/[tables, strutils]
 import ./status, ./wire, ./h2/blocking
-export status
+export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
 
 type
   ServerContext* = object
@@ -193,11 +193,13 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
 # ---------------------------------------------------------------- server
 
 proc newGrpcServer*(port = 0; address = "127.0.0.1"; maxWorkers = 256;
-                    maxMessage = defaultMaxMessage): GrpcServer =
+                    maxMessage = defaultMaxMessage; tls: TlsConfig = nil): GrpcServer =
   ## At most `maxWorkers` calls run at once; more wait for a free worker.
+  ## With `tls` (see `tlsServerConfig`) clients must use TLS 1.2 with ALPN h2.
   result = GrpcServer()
   result.reg.maxMessage = maxMessage
-  result.h2 = newStreamServer(handle, result.reg.addr, Port(port), address, maxWorkers)
+  result.h2 = newStreamServer(handle, result.reg.addr, Port(port), address,
+                              maxWorkers, tls)
 
 proc addUnary*(s: GrpcServer; path: string; handler: UnaryHandler) =
   ## `path` is "/package.Service/Method".

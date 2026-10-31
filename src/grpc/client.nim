@@ -11,7 +11,7 @@
 
 import std/strutils
 import ./status, ./wire, ./h2/blocking
-export status
+export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
 
 const userAgent = "grpc-nim/0.0.1"
 
@@ -19,6 +19,7 @@ type
   GrpcChannel* = object
     conn: Conn
     authority: string
+    scheme: string
 
   ClientCall* = object
     st: ClientStream
@@ -37,9 +38,21 @@ type
     headers*: Metadata
     trailers*: Metadata
 
-proc dial*(host: string; port: int): GrpcChannel =
-  ## Plaintext HTTP/2 (h2c) with prior knowledge.
-  GrpcChannel(conn: blocking.dial(host, Port(port)), authority: host & ":" & $port)
+proc dial*(host: string; port: int; tls: TlsConfig = nil; serverName = ""): GrpcChannel =
+  ## Without `tls`: plaintext HTTP/2 (h2c) with prior knowledge. With it:
+  ## TLS 1.2 with ALPN h2; the server certificate must match `serverName`
+  ## (default `host`; DNS names only, so use a name such as "localhost"
+  ## rather than an IP address). Raises GrpcError(UNAVAILABLE) if the server
+  ## cannot be reached; a failed handshake is reported by the first call.
+  var conn: Conn
+  var why = ""
+  try:
+    conn = blocking.dial(host, Port(port), tls, serverName)
+  except CatchableError as e:
+    why = e.msg
+  if why.len > 0: raise newGrpcError(scUnavailable, why)
+  GrpcChannel(conn: conn, authority: (if serverName.len > 0: serverName else: host) & ":" & $port,
+              scheme: if tls != nil: "https" else: "http")
 
 proc close*(ch: GrpcChannel) = ch.conn.close()
 
@@ -55,7 +68,7 @@ proc newCall*(ch: GrpcChannel; path: string; metadata: Metadata = @[];
               timeoutMs = -1; maxMessage = defaultMaxMessage): ClientCall =
   ## Opens a call to `path` ("/package.Service/Method"). `timeoutMs` bounds
   ## the whole call.
-  var headers = @[(":method", "POST"), (":scheme", "http"), (":path", path),
+  var headers = @[(":method", "POST"), (":scheme", ch.scheme), (":path", path),
                   (":authority", ch.authority), ("content-type", grpcContentType),
                   ("te", "trailers"), ("user-agent", userAgent)]
   if timeoutMs >= 0: headers.add ("grpc-timeout", encodeTimeout(timeoutMs))

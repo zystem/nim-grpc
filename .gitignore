@@ -4,8 +4,10 @@ nimcache/
 /tests/*
 !/tests/*.nim
 !/tests/interop/
+!/tests/certs/
 /tests/interop/*
 !/tests/interop/*.nim
 !/tests/interop/gopeer/
 /tools/*
 !/tools/*.nim
+/nimcache/

@@ -6,6 +6,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +18,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
 	"google.golang.org/grpc/metadata"
@@ -357,8 +360,47 @@ var cases = []testCase{
 	}},
 }
 
-func runClient(addr, only string) int {
-	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func tlsConfig(mode, certs string, server bool) *tls.Config {
+	if mode == "" {
+		return nil
+	}
+	pool := x509.NewCertPool()
+	ca, err := os.ReadFile(certs + "/ca.pem")
+	if err != nil {
+		panic(err)
+	}
+	pool.AppendCertsFromPEM(ca)
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if server {
+		cert, err := tls.LoadX509KeyPair(certs+"/server.pem", certs+"/server.key")
+		if err != nil {
+			panic(err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+		if mode == "mtls" {
+			cfg.ClientCAs = pool
+			cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+		return cfg
+	}
+	cfg.RootCAs = pool
+	cfg.ServerName = "localhost"
+	if mode == "mtls" {
+		cert, err := tls.LoadX509KeyPair(certs+"/client.pem", certs+"/client.key")
+		if err != nil {
+			panic(err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return cfg
+}
+
+func runClient(addr, only string, tc *tls.Config) int {
+	creds := insecure.NewCredentials()
+	if tc != nil {
+		creds = credentials.NewTLS(tc)
+	}
+	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		fmt.Println("dial:", err)
 		return 2
@@ -383,21 +425,27 @@ func runClient(addr, only string) int {
 }
 
 func main() {
-	mode := flag.String("mode", "client", "client or server")
+	role := flag.String("mode", "client", "client or server")
 	addr := flag.String("addr", "127.0.0.1:10000", "server address")
 	only := flag.String("cases", "", "comma-separated case names (default: all)")
+	mode := flag.String("tls", "", "\"\", \"tls\" or \"mtls\"")
+	certs := flag.String("certs", "certs", "directory with ca.pem, server.*, client.*")
 	flag.Parse()
-	if *mode == "server" {
+	if *role == "server" {
 		lis, err := net.Listen("tcp", *addr)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(2)
 		}
-		s := grpc.NewServer()
+		var opts []grpc.ServerOption
+		if tc := tlsConfig(*mode, *certs, true); tc != nil {
+			opts = append(opts, grpc.Creds(credentials.NewTLS(tc)))
+		}
+		s := grpc.NewServer(opts...)
 		testpb.RegisterTestServiceServer(s, server{})
 		fmt.Println("listening on", lis.Addr())
 		s.Serve(lis)
 		return
 	}
-	os.Exit(runClient(*addr, *only))
+	os.Exit(runClient(*addr, *only, tlsConfig(*mode, *certs, false)))
 }

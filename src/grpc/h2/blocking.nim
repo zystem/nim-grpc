@@ -19,9 +19,9 @@
 ## count is touched from two threads.
 
 import std/[locks, net, tables, deques, os, posix, atomics]
-import ./session
+import ./session, ../tls/tls
 
-export session.Header, session.H2Error, net.Port
+export session.Header, session.H2Error, net.Port, tls
 
 const
   readChunk = 16 * 1024
@@ -60,6 +60,10 @@ type
     pending: int          ## server: handlers still running for this connection
     closed: bool          ## no more reading or writing
     failure: string
+    tls: TlsConn          ## nil for plaintext; used only under `lock`
+    tlsConf: TlsConfig    ## client: keeps the config alive
+    plainOut: seq[byte]   ## TLS: session output the engine has not taken yet
+    tlsIn: seq[byte]      ## TLS: records the engine has not taken yet
     reader, writer: Thread[ptr ConnObj]
   Conn* = ref ConnObj
 
@@ -103,6 +107,7 @@ type
     workers: seq[WorkerThread]
     simple: RequestHandler   ## set when built from a whole-request handler
     simpleData: pointer
+    tls: TlsConfig        ## nil for plaintext
   Server* = ref ServerObj
 
   # ---- whole-request convenience API
@@ -146,6 +151,10 @@ proc `=destroy`(c: ConnObj) =
   `=destroy`(c.outQ.addr[])
   `=destroy`(c.streams.addr[])
   `=destroy`(c.failure.addr[])
+  `=destroy`(c.tls.addr[])
+  `=destroy`(c.tlsConf.addr[])
+  `=destroy`(c.plainOut.addr[])
+  `=destroy`(c.tlsIn.addr[])
 
 proc `=copy`(dst: var ConnObj; src: ConnObj) {.error.}
 
@@ -156,6 +165,7 @@ proc `=destroy`(s: ServerObj) =
   deinitCond(s.jobCond.addr[])
   `=destroy`(s.jobs.addr[])
   `=destroy`(s.workers.addr[])
+  `=destroy`(s.tls.addr[])
 
 proc `=copy`(dst: var ServerObj; src: ServerObj) {.error.}
 
@@ -190,12 +200,35 @@ template threadBody(body: untyped) =
 # ------------------------------------------------------------ connection internals
 # Procs ending in `Locked` expect `c.lock` to be held.
 
+proc dropPrefix(s: var seq[byte]; n: int) =
+  let rest = s.len - n
+  if rest > 0: moveMem(s[0].addr, s[n].addr, rest)
+  s.setLen(rest)
+
 proc queueOutputLocked(c: ptr ConnObj) =
+  ## Moves what the session produced (encrypted, with TLS) to the writer.
   if c.outQBytes >= maxOutQueue: return   # the writer pulls more as it drains
   let o = c.sess.takeOutput()
-  if o.len > 0:
-    c.outQBytes += o.len
-    c.outQ.addLast o
+  if c.tls == nil:
+    if o.len > 0:
+      c.outQBytes += o.len
+      c.outQ.addLast o
+  else:
+    c.plainOut.add o
+    while true:
+      var progressed = false
+      if c.plainOut.len > 0:
+        let n = c.tls.pushApp(c.plainOut)
+        if n > 0:
+          c.plainOut.dropPrefix(n)
+          progressed = true
+      if c.plainOut.len == 0: c.tls.flush()
+      let recs = c.tls.pullRecords()
+      if recs.len > 0:
+        c.outQBytes += recs.len
+        c.outQ.addLast recs
+        progressed = true
+      if not progressed or c.outQBytes >= maxOutQueue: break
   broadcast(c.cond)     # senders may now be under their buffer limit
 
 proc failLocked(c: ptr ConnObj; why: string) =
@@ -261,6 +294,24 @@ proc handleEventsLocked(c: ptr ConnObj) =
         if isServer and not st.handled: c.streams.del(ev.streamId)
   broadcast(c.cond)
 
+proc pumpTlsInLocked(c: ptr ConnObj) =
+  ## Decrypts buffered records and feeds the plaintext to the session.
+  var app: seq[byte]
+  while true:
+    let k = c.tls.pushRecords(c.tlsIn)
+    if k > 0: c.tlsIn.dropPrefix(k)
+    c.tls.pullApp(app)
+    if k == 0:
+      # The engine wants to send first (handshake), or is closed.
+      let before = c.outQBytes
+      c.queueOutputLocked()
+      if c.outQBytes == before or c.tlsIn.len == 0: break
+    elif c.tlsIn.len == 0:
+      break
+  c.tls.checkPeer()
+  if app.len > 0: c.sess.recv(app)
+  if c.tls.isClosed: raise newException(TlsError, c.tls.errorMessage)
+
 proc readerLoop(c: ptr ConnObj) {.thread.} =
   threadBody:
     var buf = newSeq[byte](readChunk)
@@ -276,7 +327,11 @@ proc readerLoop(c: ptr ConnObj) {.thread.} =
         release(c.lock)
         break
       try:
-        c.sess.recv(buf.toOpenArray(0, n - 1))
+        if c.tls == nil:
+          c.sess.recv(buf.toOpenArray(0, n - 1))
+        else:
+          c.tlsIn.add buf.toOpenArray(0, n - 1)
+          c.pumpTlsInLocked()
         c.handleEventsLocked()
         c.queueOutputLocked()
         if not c.sess.wantRead() and not c.sess.wantWrite() and c.outQ.len == 0:
@@ -313,7 +368,11 @@ proc writerLoop(c: ptr ConnObj) {.thread.} =
       acquire(c.lock)
       c.outQBytes -= chunk.len
       if ok:
-        try: c.queueOutputLocked()
+        try:
+          if c.tls != nil and c.tlsIn.len > 0:
+            c.pumpTlsInLocked()
+            c.handleEventsLocked()
+          c.queueOutputLocked()
         except CatchableError as e: c.failLocked(e.msg)
       else:
         c.failLocked("write error")
@@ -548,10 +607,12 @@ proc simpleTrampoline(st: var ServerStream; userData: pointer)
 
 proc newStreamServer*(handler: StreamHandler; userData: pointer = nil;
                       port = Port(0); address = "127.0.0.1";
-                      maxWorkers = 256): Server =
+                      maxWorkers = 256; tls: TlsConfig = nil): Server =
   ## Every request stream gets a worker thread for as long as its handler
-  ## runs; the pool grows on demand up to `maxWorkers` threads.
-  result = Server(handler: handler, userData: userData, maxWorkers: maxWorkers)
+  ## runs; the pool grows on demand up to `maxWorkers` threads. With `tls`
+  ## connections must speak TLS 1.2 with ALPN h2.
+  result = Server(handler: handler, userData: userData, maxWorkers: maxWorkers,
+                  tls: tls)
   initLock(result.jobLock)
   initCond(result.jobCond)
   result.jobs = initDeque[Job]()
@@ -561,9 +622,9 @@ proc newStreamServer*(handler: StreamHandler; userData: pointer = nil;
   result.listener.listen()
 
 proc newServer*(handler: RequestHandler; userData: pointer = nil; port = Port(0);
-                address = "127.0.0.1"; maxWorkers = 256): Server =
+                address = "127.0.0.1"; maxWorkers = 256; tls: TlsConfig = nil): Server =
   ## A server whose handler sees the whole request and returns the whole reply.
-  result = newStreamServer(simpleTrampoline, nil, port, address, maxWorkers)
+  result = newStreamServer(simpleTrampoline, nil, port, address, maxWorkers, tls)
   result.userData = result[].addr
   result.simple = handler
   result.simpleData = userData
@@ -600,6 +661,12 @@ proc acceptLoop(s: ptr ServerObj) {.thread.} =
       client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
       s.reap()
       let c = newConn(client, newServerSession(), s)
+      if s.tls != nil:
+        try:
+          c.tls = newServerTls(s.tls)
+        except TlsError:
+          client.close()
+          continue
       c.start()
       s.conns.add c
 
@@ -633,12 +700,18 @@ proc isClosed*(c: Conn): bool =
   result = c.closed
   release(c.lock)
 
-proc dial*(host: string; port: Port): Conn =
-  ## Connects with HTTP/2 prior knowledge (h2c).
+proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = ""): Conn =
+  ## Without `tls`: HTTP/2 with prior knowledge (h2c). With it: TLS 1.2,
+  ## ALPN h2, the server's certificate checked against `serverName` (default:
+  ## `host`; DNS names only). A failed handshake shows up as an error on the
+  ## first stream.
   let sock = newSocket(buffered = false)
   sock.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
   sock.connect(host, port)
   result = newConn(sock, newClientSession(), nil)
+  if tls != nil:
+    result.tlsConf = tls
+    result.tls = newClientTls(tls, if serverName.len > 0: serverName else: host)
   result.start()
 
 proc openStream*(c: Conn; headers: openArray[Header]; timeoutMs = -1): ClientStream =

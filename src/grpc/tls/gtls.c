@@ -1,0 +1,478 @@
+/*
+ * I/O-free TLS on BearSSL for nim-grpc.
+ *
+ * A gtls_conf holds what is shared by many connections and never changes once
+ * built: trust anchors, our certificate chain and private key, and whether a
+ * client certificate is required. A gtls_conn is one TLS session; bytes go in
+ * and out through four buffers (records in, records out, plaintext in,
+ * plaintext out) and the conn never touches a socket.
+ *
+ * Every function here is called with the connection's lock held by the Nim
+ * side; nothing in this file is thread-aware.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "bearssl.h"
+
+/* ------------------------------------------------------------------ buffers */
+
+typedef struct {
+    unsigned char *buf;
+    size_t len, cap;
+} gbuf;
+
+static int gbuf_add(gbuf *b, const void *data, size_t len) {
+    if (b->len + len > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 1024;
+        while (cap < b->len + len) cap *= 2;
+        unsigned char *nb = realloc(b->buf, cap);
+        if (!nb) return -1;
+        b->buf = nb;
+        b->cap = cap;
+    }
+    memcpy(b->buf + b->len, data, len);
+    b->len += len;
+    return 0;
+}
+
+static void gbuf_sink(void *ctx, const void *data, size_t len) {
+    gbuf_add((gbuf *)ctx, data, len);
+}
+
+static void *dupmem(const void *p, size_t len) {
+    void *q = malloc(len ? len : 1);
+    if (q && len) memcpy(q, p, len);
+    return q;
+}
+
+/* ------------------------------------------------------------------ PEM */
+
+typedef struct {
+    char *name;
+    unsigned char *data;
+    size_t len;
+} pem_obj;
+
+/* Decodes every PEM object in `pem`. Returns the number of objects, or -1. */
+static long decode_pem(const unsigned char *pem, size_t len, pem_obj **out) {
+    br_pem_decoder_context pc;
+    pem_obj *objs = NULL;
+    size_t n = 0;
+    gbuf cur = {0};
+    int inobj = 0;
+    char *name = NULL;
+    int extra_nl = 1;
+
+    br_pem_decoder_init(&pc);
+    while (len > 0 || extra_nl) {
+        size_t tlen;
+        if (len == 0) {   /* a final newline ends an object at end of input */
+            tlen = br_pem_decoder_push(&pc, "\n", 1);
+            extra_nl = 0;
+        } else {
+            tlen = br_pem_decoder_push(&pc, pem, len);
+            pem += tlen;
+            len -= tlen;
+        }
+        switch (br_pem_decoder_event(&pc)) {
+        case BR_PEM_BEGIN_OBJ:
+            name = strdup(br_pem_decoder_name(&pc));
+            cur.len = 0;
+            br_pem_decoder_setdest(&pc, gbuf_sink, &cur);
+            inobj = 1;
+            break;
+        case BR_PEM_END_OBJ:
+            if (inobj) {
+                pem_obj *no = realloc(objs, (n + 1) * sizeof *objs);
+                if (!no) goto fail;
+                objs = no;
+                objs[n].name = name;
+                objs[n].data = dupmem(cur.buf, cur.len);
+                objs[n].len = cur.len;
+                name = NULL;
+                n++;
+                inobj = 0;
+            }
+            break;
+        case BR_PEM_ERROR:
+            goto fail;
+        }
+    }
+    free(cur.buf);
+    if (inobj) { free(name); goto fail2; }
+    *out = objs;
+    return (long)n;
+fail:
+    free(cur.buf);
+    free(name);
+fail2:
+    for (size_t i = 0; i < n; i++) { free(objs[i].name); free(objs[i].data); }
+    free(objs);
+    return -1;
+}
+
+static void free_pem(pem_obj *objs, long n) {
+    for (long i = 0; i < n; i++) { free(objs[i].name); free(objs[i].data); }
+    free(objs);
+}
+
+static int is_cert_name(const char *name) {
+    return strcmp(name, "CERTIFICATE") == 0 || strcmp(name, "X509 CERTIFICATE") == 0;
+}
+
+/* ------------------------------------------------------------------ conf */
+
+typedef struct {
+    br_x509_trust_anchor *tas;
+    size_t ta_num;
+    br_x509_certificate *chain;
+    size_t chain_len;
+    int key_type;                  /* 0: none, BR_KEYTYPE_RSA or BR_KEYTYPE_EC */
+    br_rsa_private_key rsa;
+    br_ec_private_key ec;
+    unsigned char *key_mem;        /* owns the key's byte arrays */
+    int require_client_cert;
+    char err[160];
+} gtls_conf;
+
+gtls_conf *gtls_conf_new(void) {
+    return calloc(1, sizeof(gtls_conf));
+}
+
+const char *gtls_conf_error(gtls_conf *c) { return c->err; }
+
+static void dn_append(void *ctx, const void *buf, size_t len) {
+    gbuf_add((gbuf *)ctx, buf, len);
+}
+
+/* Adds every certificate in `pem` as a trust anchor. Returns the count, or -1. */
+long gtls_conf_add_ca(gtls_conf *c, const unsigned char *pem, size_t len) {
+    pem_obj *objs;
+    long n = decode_pem(pem, len, &objs), added = 0;
+    if (n < 0) { strcpy(c->err, "invalid PEM in CA bundle"); return -1; }
+    for (long i = 0; i < n; i++) {
+        if (!is_cert_name(objs[i].name)) continue;
+        br_x509_decoder_context dc;
+        gbuf dn = {0};
+        br_x509_decoder_init(&dc, dn_append, &dn);
+        br_x509_decoder_push(&dc, objs[i].data, objs[i].len);
+        br_x509_pkey *pk = br_x509_decoder_get_pkey(&dc);
+        if (pk == NULL) {
+            free(dn.buf);
+            snprintf(c->err, sizeof c->err, "CA certificate %ld: decode error %d",
+                     i, br_x509_decoder_last_error(&dc));
+            free_pem(objs, n);
+            return -1;
+        }
+        br_x509_trust_anchor *nt = realloc(c->tas, (c->ta_num + 1) * sizeof *nt);
+        if (!nt) { free(dn.buf); free_pem(objs, n); return -1; }
+        c->tas = nt;
+        br_x509_trust_anchor *ta = &c->tas[c->ta_num];
+        memset(ta, 0, sizeof *ta);
+        ta->dn.data = dn.buf;
+        ta->dn.len = dn.len;
+        ta->flags = br_x509_decoder_isCA(&dc) ? BR_X509_TA_CA : 0;
+        ta->pkey.key_type = pk->key_type;
+        if (pk->key_type == BR_KEYTYPE_RSA) {
+            ta->pkey.key.rsa.n = dupmem(pk->key.rsa.n, pk->key.rsa.nlen);
+            ta->pkey.key.rsa.nlen = pk->key.rsa.nlen;
+            ta->pkey.key.rsa.e = dupmem(pk->key.rsa.e, pk->key.rsa.elen);
+            ta->pkey.key.rsa.elen = pk->key.rsa.elen;
+        } else {
+            ta->pkey.key.ec.curve = pk->key.ec.curve;
+            ta->pkey.key.ec.q = dupmem(pk->key.ec.q, pk->key.ec.qlen);
+            ta->pkey.key.ec.qlen = pk->key.ec.qlen;
+        }
+        c->ta_num++;
+        added++;
+    }
+    free_pem(objs, n);
+    if (added == 0) { strcpy(c->err, "no certificate in CA bundle"); return -1; }
+    return added;
+}
+
+/* Our certificate chain (leaf first) and its private key. Returns 0 or -1. */
+int gtls_conf_set_identity(gtls_conf *c, const unsigned char *chain_pem, size_t chain_len,
+                           const unsigned char *key_pem, size_t key_len) {
+    pem_obj *objs;
+    long n = decode_pem(chain_pem, chain_len, &objs);
+    if (n < 0) { strcpy(c->err, "invalid PEM in certificate chain"); return -1; }
+    for (long i = 0; i < n; i++) {
+        if (!is_cert_name(objs[i].name)) continue;
+        br_x509_certificate *nc = realloc(c->chain, (c->chain_len + 1) * sizeof *nc);
+        if (!nc) { free_pem(objs, n); return -1; }
+        c->chain = nc;
+        c->chain[c->chain_len].data = dupmem(objs[i].data, objs[i].len);
+        c->chain[c->chain_len].data_len = objs[i].len;
+        c->chain_len++;
+    }
+    free_pem(objs, n);
+    if (c->chain_len == 0) { strcpy(c->err, "no certificate in chain"); return -1; }
+
+    n = decode_pem(key_pem, key_len, &objs);
+    if (n < 0) { strcpy(c->err, "invalid PEM in private key"); return -1; }
+    int found = 0;
+    for (long i = 0; i < n && !found; i++) {
+        const char *nm = objs[i].name;
+        if (strcmp(nm, "RSA PRIVATE KEY") && strcmp(nm, "EC PRIVATE KEY") &&
+            strcmp(nm, "PRIVATE KEY")) continue;
+        br_skey_decoder_context sk;
+        br_skey_decoder_init(&sk);
+        br_skey_decoder_push(&sk, objs[i].data, objs[i].len);
+        int err = br_skey_decoder_last_error(&sk);
+        if (err != 0) {
+            snprintf(c->err, sizeof c->err, "private key decode error %d", err);
+            free_pem(objs, n);
+            return -1;
+        }
+        c->key_type = br_skey_decoder_key_type(&sk);
+        if (c->key_type == BR_KEYTYPE_RSA) {
+            const br_rsa_private_key *k = br_skey_decoder_get_rsa(&sk);
+            size_t tot = k->plen + k->qlen + k->dplen + k->dqlen + k->iqlen;
+            unsigned char *m = malloc(tot), *p = m;
+            if (!m) { free_pem(objs, n); return -1; }
+            c->rsa = *k;
+#define CP(f, l) memcpy(p, k->f, k->l); c->rsa.f = p; p += k->l;
+            CP(p, plen) CP(q, qlen) CP(dp, dplen) CP(dq, dqlen) CP(iq, iqlen)
+#undef CP
+            c->key_mem = m;
+        } else {
+            const br_ec_private_key *k = br_skey_decoder_get_ec(&sk);
+            c->ec = *k;
+            c->key_mem = dupmem(k->x, k->xlen);
+            c->ec.x = c->key_mem;
+        }
+        found = 1;
+    }
+    free_pem(objs, n);
+    if (!found) { strcpy(c->err, "no private key in PEM"); return -1; }
+    return 0;
+}
+
+void gtls_conf_require_client_cert(gtls_conf *c, int on) { c->require_client_cert = on; }
+
+void gtls_conf_free(gtls_conf *c) {
+    if (!c) return;
+    for (size_t i = 0; i < c->ta_num; i++) {
+        br_x509_trust_anchor *ta = &c->tas[i];
+        free(ta->dn.data);
+        if (ta->pkey.key_type == BR_KEYTYPE_RSA) {
+            free(ta->pkey.key.rsa.n);
+            free(ta->pkey.key.rsa.e);
+        } else {
+            free(ta->pkey.key.ec.q);
+        }
+    }
+    free(c->tas);
+    for (size_t i = 0; i < c->chain_len; i++) free(c->chain[i].data);
+    free(c->chain);
+    if (c->key_mem) {
+        /* wipe the private key before giving the memory back */
+        size_t len = c->key_type == BR_KEYTYPE_RSA
+            ? c->rsa.plen + c->rsa.qlen + c->rsa.dplen + c->rsa.dqlen + c->rsa.iqlen
+            : c->ec.xlen;
+        memset(c->key_mem, 0, len);
+        free(c->key_mem);
+    }
+    free(c);
+}
+
+/* ------------------------------------------------------------------ conn */
+
+/*
+ * The X.509 engine is wrapped so we learn whether the peer presented a chain
+ * that validated: a BearSSL server otherwise accepts a client that sends no
+ * certificate at all.
+ */
+typedef struct {
+    const br_x509_class *vtable;
+    const br_x509_class **inner;
+    int validated;
+} x509_watch;
+
+static void xw_start_chain(const br_x509_class **ctx, const char *name) {
+    x509_watch *w = (x509_watch *)ctx;
+    w->validated = 0;
+    (*w->inner)->start_chain(w->inner, name);
+}
+static void xw_start_cert(const br_x509_class **ctx, uint32_t len) {
+    x509_watch *w = (x509_watch *)ctx;
+    (*w->inner)->start_cert(w->inner, len);
+}
+static void xw_append(const br_x509_class **ctx, const unsigned char *buf, size_t len) {
+    x509_watch *w = (x509_watch *)ctx;
+    (*w->inner)->append(w->inner, buf, len);
+}
+static void xw_end_cert(const br_x509_class **ctx) {
+    x509_watch *w = (x509_watch *)ctx;
+    (*w->inner)->end_cert(w->inner);
+}
+static unsigned xw_end_chain(const br_x509_class **ctx) {
+    x509_watch *w = (x509_watch *)ctx;
+    unsigned r = (*w->inner)->end_chain(w->inner);
+    w->validated = (r == 0);
+    return r;
+}
+static const br_x509_pkey *xw_get_pkey(const br_x509_class *const *ctx, unsigned *usages) {
+    x509_watch *w = (x509_watch *)ctx;
+    return (*w->inner)->get_pkey(w->inner, usages);
+}
+static const br_x509_class x509_watch_vtable = {
+    sizeof(x509_watch), xw_start_chain, xw_start_cert, xw_append,
+    xw_end_cert, xw_end_chain, xw_get_pkey
+};
+
+typedef struct {
+    union {
+        br_ssl_client_context client;
+        br_ssl_server_context server;
+    } u;
+    br_ssl_engine_context *eng;
+    br_x509_minimal_context x509;
+    x509_watch watch;
+    int is_server;
+    int verify_peer;               /* the peer must present a valid chain */
+    const char *alpn[1];
+    unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
+} gtls_conn;
+
+static const char *h2_name = "h2";
+
+static void setup_common(gtls_conn *t, gtls_conf *c) {
+    br_x509_minimal_init_full(&t->x509, c->tas, c->ta_num);
+    t->watch.vtable = &x509_watch_vtable;
+    t->watch.inner = &t->x509.vtable;
+    br_ssl_engine_set_x509(t->eng, &t->watch.vtable);
+    br_ssl_engine_set_buffer(t->eng, t->iobuf, sizeof t->iobuf, 1);
+    br_ssl_engine_set_versions(t->eng, BR_TLS12, BR_TLS12);
+    t->alpn[0] = h2_name;
+    br_ssl_engine_set_protocol_names(t->eng, t->alpn, 1);
+    br_ssl_engine_add_flags(t->eng, BR_OPT_FAIL_ON_ALPN_MISMATCH);
+}
+
+/* A client session. `server_name` is checked against the server's certificate
+ * (DNS names only) and sent as SNI. Returns NULL on error. */
+gtls_conn *gtls_client_new(gtls_conf *c, const char *server_name) {
+    if (c->ta_num == 0) { strcpy(c->err, "client needs trust anchors"); return NULL; }
+    gtls_conn *t = calloc(1, sizeof *t);
+    if (!t) return NULL;
+    t->eng = &t->u.client.eng;
+    br_ssl_client_init_full(&t->u.client, &t->x509, c->tas, c->ta_num);
+    setup_common(t, c);
+    t->verify_peer = 1;
+    if (c->chain_len > 0) {
+        if (c->key_type == BR_KEYTYPE_RSA)
+            br_ssl_client_set_single_rsa(&t->u.client, c->chain, c->chain_len,
+                                         &c->rsa, br_rsa_pkcs1_sign_get_default());
+        else
+            br_ssl_client_set_single_ec(&t->u.client, c->chain, c->chain_len,
+                                        &c->ec, BR_KEYTYPE_SIGN, 0,
+                                        br_ec_get_default(), br_ecdsa_sign_asn1_get_default());
+    }
+    if (!br_ssl_client_reset(&t->u.client, server_name, 0)) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+/* A server session. Returns NULL on error. */
+gtls_conn *gtls_server_new(gtls_conf *c) {
+    if (c->chain_len == 0) { strcpy(c->err, "server needs a certificate and key"); return NULL; }
+    gtls_conn *t = calloc(1, sizeof *t);
+    if (!t) return NULL;
+    t->is_server = 1;
+    t->eng = &t->u.server.eng;
+    if (c->key_type == BR_KEYTYPE_RSA)
+        br_ssl_server_init_full_rsa(&t->u.server, c->chain, c->chain_len, &c->rsa);
+    else
+        br_ssl_server_init_full_ec(&t->u.server, c->chain, c->chain_len,
+                                   BR_KEYTYPE_EC, &c->ec);
+    setup_common(t, c);
+    if (c->require_client_cert) {
+        br_ssl_server_set_trust_anchor_names_alt(&t->u.server, c->tas, c->ta_num);
+        /* The server only asks for certificate types it can verify; the
+         * "full" server profiles install no signature verifiers. */
+        br_ssl_engine_set_default_rsavrfy(t->eng);
+        br_ssl_engine_set_default_ecdsa(t->eng);
+        t->verify_peer = 1;
+    }
+    if (!br_ssl_server_reset(&t->u.server)) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void gtls_free(gtls_conn *t) {
+    if (t) {
+        memset(t, 0, sizeof *t);
+        free(t);
+    }
+}
+
+/* ------------------------------------------------------------------ pump */
+
+enum {
+    GT_CLOSED = BR_SSL_CLOSED, GT_SENDREC = BR_SSL_SENDREC, GT_RECVREC = BR_SSL_RECVREC,
+    GT_SENDAPP = BR_SSL_SENDAPP, GT_RECVAPP = BR_SSL_RECVAPP
+};
+
+unsigned gtls_state(gtls_conn *t) { return br_ssl_engine_current_state(t->eng); }
+int gtls_last_error(gtls_conn *t) { return br_ssl_engine_last_error(t->eng); }
+
+/* Records from the network. Returns bytes taken (0 if the engine wants none now). */
+size_t gtls_push_records(gtls_conn *t, const unsigned char *data, size_t len) {
+    if (!(br_ssl_engine_current_state(t->eng) & BR_SSL_RECVREC)) return 0;
+    size_t cap;
+    unsigned char *buf = br_ssl_engine_recvrec_buf(t->eng, &cap);
+    size_t n = len < cap ? len : cap;
+    memcpy(buf, data, n);
+    br_ssl_engine_recvrec_ack(t->eng, n);
+    return n;
+}
+
+/* Records for the network. Returns bytes written to `out`. */
+size_t gtls_pull_records(gtls_conn *t, unsigned char *out, size_t cap) {
+    if (!(br_ssl_engine_current_state(t->eng) & BR_SSL_SENDREC)) return 0;
+    size_t len;
+    unsigned char *buf = br_ssl_engine_sendrec_buf(t->eng, &len);
+    size_t n = len < cap ? len : cap;
+    memcpy(out, buf, n);
+    br_ssl_engine_sendrec_ack(t->eng, n);
+    return n;
+}
+
+/* Plaintext to send. Returns bytes taken (0 until the handshake is done). */
+size_t gtls_push_app(gtls_conn *t, const unsigned char *data, size_t len) {
+    if (!(br_ssl_engine_current_state(t->eng) & BR_SSL_SENDAPP)) return 0;
+    size_t cap;
+    unsigned char *buf = br_ssl_engine_sendapp_buf(t->eng, &cap);
+    size_t n = len < cap ? len : cap;
+    memcpy(buf, data, n);
+    br_ssl_engine_sendapp_ack(t->eng, n);
+    return n;
+}
+
+void gtls_flush(gtls_conn *t) { br_ssl_engine_flush(t->eng, 0); }
+
+/* Plaintext received. Returns bytes written to `out`. */
+size_t gtls_pull_app(gtls_conn *t, unsigned char *out, size_t cap) {
+    if (!(br_ssl_engine_current_state(t->eng) & BR_SSL_RECVAPP)) return 0;
+    size_t len;
+    unsigned char *buf = br_ssl_engine_recvapp_buf(t->eng, &len);
+    size_t n = len < cap ? len : cap;
+    memcpy(out, buf, n);
+    br_ssl_engine_recvapp_ack(t->eng, n);
+    return n;
+}
+
+/* Starts close_notify. */
+void gtls_close(gtls_conn *t) { br_ssl_engine_close(t->eng); }
+
+/* After the handshake: the negotiated ALPN protocol, or NULL. */
+const char *gtls_alpn(gtls_conn *t) { return br_ssl_engine_get_selected_protocol(t->eng); }
+
+/* After the handshake: 1 if the peer is authenticated as required. */
+int gtls_peer_ok(gtls_conn *t) { return !t->verify_peer || t->watch.validated; }

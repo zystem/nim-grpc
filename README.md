@@ -3,10 +3,11 @@
 gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
 **Status:** early. Unary and streaming calls (client-, server- and
-bidirectional) work, client and server, over plaintext HTTP/2. 14 interop cases
-pass against grpc-go in both directions ([docs/interop.md](docs/interop.md)).
-The HTTP/2 layer passes 135 of 146 h2spec tests
-([docs/h2spec.md](docs/h2spec.md)). TLS and code generation are next.
+bidirectional) work, client and server, over plaintext HTTP/2, TLS and mutual
+TLS. 14 interop cases pass against grpc-go in both directions in each mode
+([docs/interop.md](docs/interop.md)). The HTTP/2 layer passes 135 of 146 h2spec
+tests ([docs/h2spec.md](docs/h2spec.md)). Code generation from `.proto` is
+next.
 
 ```nim
 import grpc
@@ -23,6 +24,17 @@ srv.start()
 
 let ch = dial("127.0.0.1", 50051)
 let r = ch.unaryCall("/helloworld.Greeter/SayHello", @[1'u8, 2, 3], timeoutMs = 1000)
+```
+
+TLS and mutual TLS (BearSSL, TLS 1.2, ALPN `h2`; RSA or EC keys in PEM):
+
+```nim
+let srv = newGrpcServer(port = 50051,
+  tls = tlsServerConfig(readFile("server.pem"), readFile("server.key"),
+                        clientCaPem = readFile("ca.pem")))   # omit for plain TLS
+let ch = dial("10.0.0.5", 50051,
+  tlsClientConfig(readFile("ca.pem"), readFile("client.pem"), readFile("client.key")),
+  serverName = "api.internal")   # checked against the certificate's DNS names
 ```
 
 Streaming: the server handler gets a `ServerCall`, the client opens a
@@ -58,12 +70,17 @@ call.close()
   grows on demand. Output is bounded per connection and per stream, so a slow
   peer slows the sender down. A chronos adapter is planned. TLS with ALPN
   `h2` lives in the adapters.
+- **TLS without I/O either.** BearSSL's engine is driven through four buffers
+  under the connection lock (`grpc/tls`), so TLS fits the same threading model.
+  TLS 1.2 only: BearSSL has no TLS 1.3.
 - **ORC-safe FFI.** nghttp2 only ever sees raw `ptr` to objects the session owns;
   callbacks are `raises: []` and never let an exception reach C.
 
 ## Building
 
-nghttp2 is linked statically. Build it once:
+Dependencies: Nim 2.2.12 or later, [nim-bearssl](https://github.com/status-im/nim-bearssl)
+(`nimble install bearssl`; BearSSL is compiled from source, nothing to install)
+and nghttp2, linked statically. Build nghttp2 once:
 
 ```sh
 curl -LO https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.xz
@@ -74,7 +91,8 @@ cmake -S . -B build -DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF \
 cmake --build build -j && cmake --install build
 ```
 
-A different prefix is passed with `-d:nghttp2Prefix=/path`.
+A different prefix is passed with `-d:nghttp2Prefix=/path`. Without nimble,
+point `NIM_BEARSSL` at a checkout of nim-bearssl (with its submodule).
 
 ```sh
 nimble test   # unit tests
@@ -89,7 +107,16 @@ nimble tsan   # the same under ThreadSanitizer
 3. gRPC unary calls: message framing, `grpc-timeout`, status in trailers,
    metadata; interop tests against grpc-go — done
 4. Streaming calls (client, server, bidi) — done
-5. TLS with ALPN `h2`, mTLS
+5. TLS with ALPN `h2`, mTLS — done
 6. chronos adapter
 7. Code generation from `.proto`
 8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
+
+## Footprint
+
+Measured on Linux x86-64, glibc, `-d:release`:
+
+- A minimal TLS client, stripped: about 600 KB, with nghttp2 and BearSSL
+  linked in. It needs only libc.
+- Client RSS: 2.9 MiB after the first call over TLS, still 2.9 MiB after 1,000
+  more calls, and 3.2 MiB after another 200 TLS connect/close cycles.

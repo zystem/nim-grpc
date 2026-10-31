@@ -67,8 +67,8 @@ proc fullDuplexCall(ctx: var ServerContext; call: var ServerCall)
       call.send(StreamingOutputCallResponse(
         payload: Payload(body: newSeq[byte](p.size))).encode)
 
-proc newTestServer*(port = 0): GrpcServer =
-  result = newGrpcServer(port)
+proc newTestServer*(port = 0; tls: TlsConfig = nil): GrpcServer =
+  result = newGrpcServer(port, tls = tls)
   result.addUnary(svc & "EmptyCall", emptyCall)
   result.addUnary(svc & "UnaryCall", unaryCall)
   result.addStreaming(svc & "StreamingOutputCall", streamingOutputCall)
@@ -219,9 +219,10 @@ const allCases* = ["empty_unary", "large_unary", "client_streaming",
                    "special_status_message", "unimplemented_method",
                    "unimplemented_service", "custom_metadata"]
 
-proc runClient*(host: string; port: int; only: seq[string] = @[]): int =
+proc runClient*(host: string; port: int; only: seq[string] = @[];
+                tls: TlsConfig = nil; serverName = ""): int =
   ## Returns the number of failed cases.
-  let ch = dial(host, port)
+  let ch = dial(host, port, tls, serverName)
   for name in allCases:
     if only.len > 0 and name notin only: continue
     try:
@@ -233,14 +234,32 @@ proc runClient*(host: string; port: int; only: seq[string] = @[]): int =
   ch.close()
 
 when isMainModule:
-  let mode = if paramCount() >= 1: paramStr(1) else: "client"
-  if mode == "server":
-    let s = newTestServer(if paramCount() >= 2: parseInt(paramStr(2)) else: 10000)
+  # interop server PORT [--tls|--mtls] [--certs=DIR]
+  # interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR]
+  var pos: seq[string]
+  var mode = ""
+  var certs = currentSourcePath.parentDir.parentDir / "certs"
+  for i in 1 .. paramCount():
+    let a = paramStr(i)
+    if a in ["--tls", "--mtls"]: mode = a[2 .. ^1]
+    elif a.startsWith("--certs="): certs = a["--certs=".len .. ^1]
+    else: pos.add a
+  proc pem(name: string): string = readFile(certs / name)
+  if pos.len > 0 and pos[0] == "server":
+    let tls = case mode
+      of "tls": tlsServerConfig(pem"server.pem", pem"server.key")
+      of "mtls": tlsServerConfig(pem"server.pem", pem"server.key", clientCaPem = pem"ca.pem")
+      else: nil
+    let s = newTestServer(if pos.len >= 2: parseInt(pos[1]) else: 10000, tls)
     s.start()
-    echo "listening on ", s.port
+    echo "listening on ", s.port, (if mode.len > 0: " (" & mode & ")" else: "")
     while true: sleep(1000)
   else:
-    let host = if paramCount() >= 2: paramStr(2) else: "127.0.0.1"
-    let port = if paramCount() >= 3: parseInt(paramStr(3)) else: 10000
-    let only = if paramCount() >= 4: paramStr(4).split(',') else: @[]
-    quit(runClient(host, port, only))
+    let host = if pos.len >= 2: pos[1] else: "127.0.0.1"
+    let port = if pos.len >= 3: parseInt(pos[2]) else: 10000
+    let only = if pos.len >= 4: pos[3].split(',') else: @[]
+    let tls = case mode
+      of "tls": tlsClientConfig(pem"ca.pem")
+      of "mtls": tlsClientConfig(pem"ca.pem", pem"client.pem", pem"client.key")
+      else: nil
+    quit(runClient(host, port, only, tls, if tls != nil: "localhost" else: ""))

@@ -8,7 +8,16 @@ in grpc/grpc) and run over the shared `grpc.testing.TestService`.
 
 ## Results, 2026-10-31
 
-All four directions pass, and five runs in a row gave the same result.
+Every direction passes in each mode (plaintext, TLS, mutual TLS); five runs in
+a row gave the same result. TLS: BearSSL TLS 1.2 on the Nim side, Go's
+crypto/tls on the other, ALPN h2, EC P-256 certificates from `tests/certs`.
+
+Rejections across implementations:
+
+- A grpc-go client without a certificate, against a Nim server requiring one:
+  refused. grpc-go reports the handshake as failed with EOF.
+- A Nim client without a certificate, against a grpc-go server requiring one:
+  refused, with Go's fatal alert 42 (bad_certificate).
 
 | Case | Nim → Nim | grpc-go → Nim | Nim → grpc-go |
 |:---|:---:|:---:|:---:|
@@ -28,7 +37,7 @@ All four directions pass, and five runs in a row gave the same result.
 | custom_metadata (unary and duplex) | pass | pass | pass |
 
 Not covered yet: the compression cases (client_compressed_*,
-server_compressed_*), the auth cases (which need TLS and Google credentials),
+server_compressed_*), the Google auth cases (they need Google credentials),
 and the load-balancing and xDS cases.
 
 ## Running
@@ -44,6 +53,9 @@ and run `go build`. With module proxy access, delete the `replace` block and
 run `go mod tidy`. Without it, as in the sandbox where these results were
 produced, point the `replace` lines at local clones of grpc-go, x/net, x/sys,
 x/text, protobuf-go and go-genproto (googleapis/rpc).
+
+Add `--tls` or `--mtls` to the Nim peer, and `-tls tls` or `-tls mtls -certs tests/certs` to
+the Go peer, to run the same cases over TLS.
 
 ```sh
 ./peer -mode server -addr 127.0.0.1:10011 &
