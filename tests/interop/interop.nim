@@ -3,7 +3,7 @@
 ## interop cases from grpc/grpc doc/interop-test-descriptions.md.
 ##
 ##   interop server PORT [--tls|--mtls] [--certs=DIR]
-##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR]
+##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR] [--lenient-compression]
 
 import std/[os, strutils]
 import grpc
@@ -30,18 +30,28 @@ proc emptyCall(ctx: var ServerContext; req: Empty): Empty
     {.nimcall, gcsafe, raises: [CatchableError].} =
   Empty()
 
+proc checkCompressed(ctx: ServerContext; expect: BoolValue) =
+  ## The compression interop cases: a message that says it was sent
+  ## compressed must have been.
+  if expect.value and not ctx.requestCompressed:
+    raise newGrpcError(scInvalidArgument, "expected a compressed message")
+
 proc unaryCall(ctx: var ServerContext; req: SimpleRequest): SimpleResponse
     {.nimcall, gcsafe, raises: [CatchableError].} =
   ctx.echoMetadata()
+  checkCompressed(ctx, req.expectCompressed)
   echoStatus(req.responseStatus)
+  if req.responseCompressed.value: ctx.responseCompression = "gzip"
   SimpleResponse(payload: zeros(req.responseSize))
 
 proc streamingOutputCall(ctx: var ServerContext; req: StreamingOutputCallRequest;
                          output: var ServerWriter[StreamingOutputCallResponse])
     {.nimcall, gcsafe, raises: [CatchableError].} =
   for p in req.responseParameters:
+    if p.compressed.value: ctx.responseCompression = "gzip"
+  for p in req.responseParameters:
     if p.intervalUs > 0: sleep(p.intervalUs div 1000)
-    output.send StreamingOutputCallResponse(payload: zeros(p.size))
+    output.send(StreamingOutputCallResponse(payload: zeros(p.size)), p.compressed.value)
 
 proc streamingInputCall(ctx: var ServerContext;
                         input: var ServerReader[StreamingInputCallRequest]):
@@ -49,7 +59,9 @@ proc streamingInputCall(ctx: var ServerContext;
     {.nimcall, gcsafe, raises: [CatchableError].} =
   var req: StreamingInputCallRequest
   var total = 0
-  while input.recv(req): total += req.payload.body.len
+  while input.recv(req):
+    checkCompressed(ctx, req.expectCompressed)
+    total += req.payload.body.len
   StreamingInputCallResponse(aggregatedPayloadSize: total.int32)
 
 proc fullDuplexCall(ctx: var ServerContext;
@@ -61,8 +73,9 @@ proc fullDuplexCall(ctx: var ServerContext;
   while call.recv(req):
     echoStatus(req.responseStatus)
     for p in req.responseParameters:
+      if p.compressed.value: ctx.responseCompression = "gzip"
       if p.intervalUs > 0: sleep(p.intervalUs div 1000)
-      call.send StreamingOutputCallResponse(payload: zeros(p.size))
+      call.send(StreamingOutputCallResponse(payload: zeros(p.size)), p.compressed.value)
 
 proc newTestServer*(port = 0; tls: TlsConfig = nil): GrpcServer =
   result = newGrpcServer(port, tls = tls)
@@ -97,6 +110,11 @@ proc outReq(respSizes: openArray[int32]; payload = 0;
 const
   reqSizes = [27182, 8, 1828, 45904]
   respSizes = [31415'i32, 9, 2653, 58979]
+
+var strictCompression* = true
+  ## Off against servers that cannot report whether a request was compressed
+  ## or choose compression per message (grpc-go): the probes and the
+  ## "this one must not be compressed" checks are skipped.
 
 proc runCase*(ch: GrpcChannel; name: string) =
   ## Raises on failure.
@@ -190,6 +208,58 @@ proc runCase*(ch: GrpcChannel; name: string) =
     expectCode(proc () =
       call.send outReq([], payload = 27182)
       while call.recv(resp): discard, scDeadlineExceeded)
+  of "client_compressed_unary":
+    let req = SimpleRequest(responseSize: 314159, payload: zeros(271828),
+                            expectCompressed: BoolValue(value: true))
+    if strictCompression:   # probe: the server must notice an uncompressed one
+      expectCode(proc () = discard svc.unaryCall(req), scInvalidArgument)
+    let r = svc.unaryCall(req, compression = "gzip", timeoutMs = 10_000)
+    check r.payload.body.len == 314159, "compressed call: payload size"
+    var plain = req
+    plain.expectCompressed = BoolValue(value: false)
+    check svc.unaryCall(plain, timeoutMs = 10_000).payload.body.len == 314159,
+          "uncompressed call: payload size"
+  of "server_compressed_unary":
+    for compressed in [true, false]:
+      var call = svc.ch.newCall("/grpc.testing.TestService/UnaryCall", timeoutMs = 10_000)
+      defer: call.close()
+      call.send SimpleRequest(responseSize: 314159,
+                              responseCompressed: BoolValue(value: compressed)).encode
+      call.closeSend()
+      var raw: seq[byte]
+      check call.recv(raw), "no response"
+      check SimpleResponse.decode(raw).payload.body.len == 314159, "payload size"
+      if compressed or strictCompression:
+        check call.lastCompressed == compressed,
+              "response compressed: " & $call.lastCompressed & ", want " & $compressed
+      check not call.recv(raw), "extra response"
+  of "client_compressed_streaming":
+    if strictCompression:
+      expectCode(proc () =
+        var probe = svc.streamingInputCall(timeoutMs = 10_000)
+        defer: probe.close()
+        probe.send StreamingInputCallRequest(payload: zeros(27182),
+                                             expectCompressed: BoolValue(value: true))
+        discard probe.closeAndRecv(), scInvalidArgument)
+    var call = svc.streamingInputCall(timeoutMs = 10_000, compression = "gzip")
+    defer: call.close()
+    call.send(StreamingInputCallRequest(payload: zeros(27182),
+                                        expectCompressed: BoolValue(value: true)), true)
+    call.send(StreamingInputCallRequest(payload: zeros(45904)), false)
+    let total = call.closeAndRecv().aggregatedPayloadSize
+    check total == 73086, "aggregated " & $total
+  of "server_compressed_streaming":
+    var req = StreamingOutputCallRequest()
+    req.responseParameters.add ResponseParameters(size: 31415, compressed: BoolValue(value: true))
+    req.responseParameters.add ResponseParameters(size: 92653, compressed: BoolValue(value: false))
+    var call = svc.streamingOutputCall(req, timeoutMs = 10_000)
+    defer: call.close()
+    check call.recv(resp), "no first response"
+    check resp.payload.body.len == 31415 and call.lastCompressed, "first: compressed 31415"
+    check call.recv(resp), "no second response"
+    check resp.payload.body.len == 92653, "second: size"
+    if strictCompression: check not call.lastCompressed, "second must not be compressed"
+    check not call.recv(resp), "extra response"
   else:
     raise newException(ValueError, "unknown case " & name)
 
@@ -198,7 +268,9 @@ const allCases* = ["empty_unary", "large_unary", "client_streaming",
                    "cancel_after_begin", "cancel_after_first_response",
                    "timeout_on_sleeping_server", "status_code_and_message",
                    "special_status_message", "unimplemented_method",
-                   "unimplemented_service", "custom_metadata"]
+                   "unimplemented_service", "custom_metadata",
+                   "client_compressed_unary", "server_compressed_unary",
+                   "client_compressed_streaming", "server_compressed_streaming"]
 
 proc runClient*(host: string; port: int; only: seq[string] = @[];
                 tls: TlsConfig = nil; serverName = ""): int =
@@ -221,6 +293,7 @@ when isMainModule:
   for i in 1 .. paramCount():
     let a = paramStr(i)
     if a in ["--tls", "--mtls"]: mode = a[2 .. ^1]
+    elif a == "--lenient-compression": strictCompression = false
     elif a.startsWith("--certs="): certs = a["--certs=".len .. ^1]
     else: pos.add a
   proc pem(name: string): string = readFile(certs / name)

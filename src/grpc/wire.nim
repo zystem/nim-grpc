@@ -11,9 +11,11 @@ const
 
 # ---------------------------------------------------------------- messages
 
-proc encodeMessage*(msg: openArray[byte]): seq[byte] =
-  ## One uncompressed message: flag byte 0, 4-byte big-endian length, payload.
+proc encodeMessage*(msg: openArray[byte]; compressed = false): seq[byte] =
+  ## One message frame: flag byte (1 if `msg` is already compressed), 4-byte
+  ## big-endian length, payload.
   result = newSeq[byte](5 + msg.len)
+  result[0] = byte(ord(compressed))
   let n = msg.len.uint32
   result[1] = byte(n shr 24)
   result[2] = byte(n shr 16)
@@ -41,6 +43,40 @@ proc decodeMessages*(body: openArray[byte]; maxLen = defaultMaxMessage): seq[seq
       raise newGrpcError(scInternal, "truncated message")
     result.add @(body.toOpenArray(i + 5, i + 4 + n))
     i += 5 + n
+
+proc takeFrame*(buf: var seq[byte]; pos: var int; maxLen: int;
+                payload: var seq[byte]; compressed: var bool): bool =
+  ## Takes the next complete message frame from `buf[pos..]`, if there is
+  ## one, advancing `pos` and compacting `buf` once all of it is consumed.
+  ## Raises GrpcError for a bad flag (INTERNAL) or a declared length above
+  ## `maxLen` (RESOURCE_EXHAUSTED).
+  let avail = buf.len - pos
+  if avail < 5: return false
+  let flag = buf[pos]
+  if flag > 1: raise newGrpcError(scInternal, "invalid message flag " & $flag)
+  let n = (buf[pos+1].int shl 24) or (buf[pos+2].int shl 16) or
+          (buf[pos+3].int shl 8) or buf[pos+4].int
+  if n > maxLen:
+    raise newGrpcError(scResourceExhausted,
+      "message of " & $n & " bytes exceeds the limit of " & $maxLen)
+  if avail < 5 + n: return false
+  payload = buf[pos + 5 ..< pos + 5 + n]
+  compressed = flag == 1
+  pos += 5 + n
+  if pos == buf.len:
+    buf.setLen(0)
+    pos = 0
+  true
+
+proc appendData*(buf: var seq[byte]; pos: var int; chunk: openArray[byte]) =
+  ## Appends received bytes, dropping the consumed prefix first.
+  if pos > 0:
+    buf = buf[pos .. ^1]
+    pos = 0
+  buf.add chunk
+
+const supportedEncodings* = ["identity", "gzip"]
+const acceptEncodingHeader* = ("grpc-accept-encoding", "gzip")
 
 # ---------------------------------------------------------------- grpc-timeout
 

@@ -44,10 +44,11 @@ proc decodeMsg*[T](data: seq[byte]; code: StatusCode): T =
 # ---------------------------------------------------------------- client
 
 proc unaryCallTyped*[Req, Resp](ch: GrpcChannel; path: string; req: Req;
-                                metadata: Metadata; timeoutMs: int):
+                                metadata: Metadata; timeoutMs: int;
+                                compression = ""):
                                 tuple[message: Resp, headers, trailers: Metadata] =
   mixin encode
-  let r = ch.unaryCall(path, encode(req), metadata, timeoutMs)
+  let r = ch.unaryCall(path, encode(req), metadata, timeoutMs, compression = compression)
   (decodeMsg[Resp](r.message, scInternal), r.headers, r.trailers)
 
 proc recv*[Resp](c: var ClientReader[Resp]; msg: var Resp): bool =
@@ -64,9 +65,17 @@ proc send*[Req, Resp](c: var ClientWriter[Req, Resp]; msg: Req) =
   mixin encode
   c.raw.send(encode(msg))
 
+proc send*[Req, Resp](c: var ClientWriter[Req, Resp]; msg: Req; compressed: bool) =
+  mixin encode
+  c.raw.send(encode(msg), compressed)
+
 proc send*[Req, Resp](c: var ClientBidi[Req, Resp]; msg: Req) =
   mixin encode
   c.raw.send(encode(msg))
+
+proc send*[Req, Resp](c: var ClientBidi[Req, Resp]; msg: Req; compressed: bool) =
+  mixin encode
+  c.raw.send(encode(msg), compressed)
 
 proc closeSend*[Req, Resp](c: var ClientBidi[Req, Resp]) = c.raw.closeSend()
 
@@ -86,25 +95,29 @@ template forwardCallProcs(T: untyped) =
   proc cancel*(c: var T) = c.raw.cancel()
   proc headers*(c: T): Metadata = c.raw.headers
   proc trailers*(c: T): Metadata = c.raw.trailers
+  proc lastCompressed*(c: T): bool = c.raw.lastCompressed
 
 forwardCallProcs(ClientReader)
 forwardCallProcs(ClientWriter)
 forwardCallProcs(ClientBidi)
 
 proc openReader*[Req, Resp](ch: GrpcChannel; path: string; req: Req;
-                            metadata: Metadata; timeoutMs: int): ClientReader[Resp] =
+                            metadata: Metadata; timeoutMs: int;
+                            compression = ""): ClientReader[Resp] =
   mixin encode
-  result.raw = ch.newCall(path, metadata, timeoutMs)
+  result.raw = ch.newCall(path, metadata, timeoutMs, compression = compression)
   result.raw.send(encode(req))
   result.raw.closeSend()
 
 proc openWriter*[Req, Resp](ch: GrpcChannel; path: string;
-                            metadata: Metadata; timeoutMs: int): ClientWriter[Req, Resp] =
-  result.raw = ch.newCall(path, metadata, timeoutMs)
+                            metadata: Metadata; timeoutMs: int;
+                            compression = ""): ClientWriter[Req, Resp] =
+  result.raw = ch.newCall(path, metadata, timeoutMs, compression = compression)
 
 proc openBidi*[Req, Resp](ch: GrpcChannel; path: string;
-                          metadata: Metadata; timeoutMs: int): ClientBidi[Req, Resp] =
-  result.raw = ch.newCall(path, metadata, timeoutMs)
+                          metadata: Metadata; timeoutMs: int;
+                          compression = ""): ClientBidi[Req, Resp] =
+  result.raw = ch.newCall(path, metadata, timeoutMs, compression = compression)
 
 # ---------------------------------------------------------------- server
 
@@ -122,9 +135,18 @@ proc send*[Resp](c: var ServerWriter[Resp]; msg: Resp) =
   mixin encode
   c.raw[].send(encode(msg))
 
+proc send*[Resp](c: var ServerWriter[Resp]; msg: Resp; compressed: bool) =
+  ## Compressed only if the response uses gzip (`ctx.responseCompression`).
+  mixin encode
+  c.raw[].send(encode(msg), compressed)
+
 proc send*[Req, Resp](c: var ServerBidi[Req, Resp]; msg: Resp) =
   mixin encode
   c.raw[].send(encode(msg))
+
+proc send*[Req, Resp](c: var ServerBidi[Req, Resp]; msg: Resp; compressed: bool) =
+  mixin encode
+  c.raw[].send(encode(msg), compressed)
 
 proc isCancelled*[T](c: ServerReader[T] | ServerWriter[T]): bool = c.raw[].isCancelled
 proc isCancelled*[Req, Resp](c: ServerBidi[Req, Resp]): bool = c.raw[].isCancelled

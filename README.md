@@ -4,7 +4,8 @@ gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
 **Status:** early. Unary and streaming calls (client-, server- and
 bidirectional) work, client and server, over plaintext HTTP/2, TLS and mutual
-TLS. 14 interop cases pass against grpc-go in both directions in each mode
+TLS, with optional gzip message compression. 18 interop cases pass against
+grpc-go in both directions in each mode
 ([docs/interop.md](docs/interop.md)), with the Nim side written against code
 generated from the official interop protos. The HTTP/2 layer passes 135 of 146
 h2spec tests ([docs/h2spec.md](docs/h2spec.md)).
@@ -73,6 +74,12 @@ let ch = dial("10.0.0.5", 50051,
   serverName = "api.internal")   # checked against the certificate's DNS names
 ```
 
+gzip compression: clients pass `compression = "gzip"` to a call (every
+message, or per message with `send(msg, compressed)`); handlers set
+`ctx.responseCompression = "gzip"`. Both sides always accept gzip, and
+`maxMessage` limits a message after decompression, so a small compressed
+message cannot expand without bound.
+
 Streaming: the server handler gets a `ServerCall`, the client opens a
 `ClientCall`.
 
@@ -115,8 +122,8 @@ call.close()
 ## Building
 
 Dependencies: Nim 2.2.12 or later, [nim-bearssl](https://github.com/status-im/nim-bearssl)
-(`nimble install bearssl`; BearSSL is compiled from source, nothing to install)
-and nghttp2, linked statically. Build nghttp2 once:
+(`nimble install bearssl`; BearSSL is compiled from source, nothing to install),
+zlib (`-lz`; `-d:zlibStatic` links `libz.a`) and nghttp2, linked statically. Build nghttp2 once:
 
 ```sh
 curl -LO https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.xz

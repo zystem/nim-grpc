@@ -640,28 +640,28 @@ proc genService(g: var Gen; s: ServiceDesc): string =
     let mnPlain = mn.strip(chars = {'`'})
     if not m.clientStreaming and not m.serverStreaming:
       o.add "proc " & mn & "*(c: " & sn & "Client; req: " & req &
-            "; metadata: Metadata = @[]; timeoutMs = -1): " & resp & " ="
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"): " & resp & " ="
       o.add "  unaryCallTyped[" & req & ", " & resp & "](c.ch, \"" & path &
-            "\", req, metadata, timeoutMs).message"
+            "\", req, metadata, timeoutMs, compression).message"
       o.add ""
       o.add "proc " & mnPlain & "WithMetadata*(c: " & sn & "Client; req: " & req &
-            "; metadata: Metadata = @[]; timeoutMs = -1):"
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"):"
       o.add "    tuple[message: " & resp & ", headers, trailers: Metadata] ="
       o.add "  unaryCallTyped[" & req & ", " & resp & "](c.ch, \"" & path &
-            "\", req, metadata, timeoutMs)"
+            "\", req, metadata, timeoutMs, compression)"
     elif m.serverStreaming and not m.clientStreaming:
       o.add "proc " & mn & "*(c: " & sn & "Client; req: " & req &
-            "; metadata: Metadata = @[]; timeoutMs = -1): ClientReader[" & resp & "] ="
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"): ClientReader[" & resp & "] ="
       o.add "  openReader[" & req & ", " & resp & "](c.ch, \"" & path &
-            "\", req, metadata, timeoutMs)"
+            "\", req, metadata, timeoutMs, compression)"
     elif m.clientStreaming and not m.serverStreaming:
-      o.add "proc " & mn & "*(c: " & sn & "Client; metadata: Metadata = @[]; timeoutMs = -1):"
-      o.add "    ClientWriter[" & req & ", " & resp & "] ="
-      o.add "  openWriter[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs)"
+      o.add "proc " & mn & "*(c: " & sn & "Client; metadata: Metadata = @[]; timeoutMs = -1;"
+      o.add "    compression = \"\"): ClientWriter[" & req & ", " & resp & "] ="
+      o.add "  openWriter[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs, compression)"
     else:
-      o.add "proc " & mn & "*(c: " & sn & "Client; metadata: Metadata = @[]; timeoutMs = -1):"
-      o.add "    ClientBidi[" & req & ", " & resp & "] ="
-      o.add "  openBidi[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs)"
+      o.add "proc " & mn & "*(c: " & sn & "Client; metadata: Metadata = @[]; timeoutMs = -1;"
+      o.add "    compression = \"\"): ClientBidi[" & req & ", " & resp & "] ="
+      o.add "  openBidi[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs, compression)"
     o.add ""
   o.add "proc register" & sn & "*(s: GrpcServer; h: " & sn & "Handlers) ="
   o.add "  ## Adds the methods of " & fullName & " that `h` implements."

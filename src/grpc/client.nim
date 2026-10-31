@@ -10,7 +10,7 @@
 ## and must not outlive its channel.
 
 import std/strutils
-import ./status, ./wire, ./h2/blocking
+import ./status, ./wire, ./h2/blocking, ./compress/gzip
 export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
 
 const userAgent = "grpc-nim/0.0.1"
@@ -30,6 +30,9 @@ type
     ended: bool             ## the status has been read
     cancelled: bool
     maxMessage: int
+    gzipOut: bool           ## the call was opened with compression = "gzip"
+    respEncoding: string    ## the server's grpc-encoding
+    lastCompressed*: bool   ## whether the last message `recv` returned was compressed
     headers*: Metadata      ## initial metadata, once the first `recv` returned
     trailers*: Metadata     ## trailing metadata, once the call has ended
 
@@ -65,15 +68,22 @@ proc rstToStatus(code: uint32): StatusCode =
   else: scInternal
 
 proc newCall*(ch: GrpcChannel; path: string; metadata: Metadata = @[];
-              timeoutMs = -1; maxMessage = defaultMaxMessage): ClientCall =
+              timeoutMs = -1; maxMessage = defaultMaxMessage;
+              compression = ""): ClientCall =
   ## Opens a call to `path` ("/package.Service/Method"). `timeoutMs` bounds
-  ## the whole call.
+  ## the whole call. With `compression = "gzip"` messages are sent
+  ## compressed (see `send`); compressed replies are always accepted, and
+  ## `maxMessage` limits them after decompression.
+  if compression notin ["", "identity", "gzip"]:
+    raise newGrpcError(scInvalidArgument, "unsupported compression " & compression.escape)
   var headers = @[(":method", "POST"), (":scheme", ch.scheme), (":path", path),
                   (":authority", ch.authority), ("content-type", grpcContentType),
-                  ("te", "trailers"), ("user-agent", userAgent)]
+                  ("te", "trailers"), ("user-agent", userAgent), acceptEncodingHeader]
+  if compression == "gzip": headers.add ("grpc-encoding", "gzip")
   if timeoutMs >= 0: headers.add ("grpc-timeout", encodeTimeout(timeoutMs))
   headers.add metadata.toWire
   result.maxMessage = maxMessage
+  result.gzipOut = compression == "gzip"
   var why = ""
   try:
     result.st = ch.conn.openStream(headers, timeoutMs)
@@ -108,6 +118,7 @@ proc readHeaders(call: var ClientCall) =
   for (k, v) in hs:
     if k == ":status": httpStatus = v
     elif k == "content-type": contentType = v
+    elif k == "grpc-encoding": call.respEncoding = v
   call.headers = fromWire(hs)
   if httpStatus != "200":
     call.fail(httpToStatus(httpStatus), "HTTP status " & httpStatus)
@@ -167,14 +178,22 @@ template mapErrors(call: var ClientCall; body: untyped) =
     h2err = e
   if h2err != nil: call.raiseMapped(h2err)
 
-proc send*(call: var ClientCall; msg: openArray[byte]) =
-  ## Sends one message. If the server has already ended the call, raises its
-  ## status (GrpcError).
+proc send*(call: var ClientCall; msg: openArray[byte]; compressed: bool) =
+  ## Sends one message, compressed or not. Compressing needs a call opened
+  ## with `compression = "gzip"`. If the server has already ended the call,
+  ## raises its status (GrpcError).
   if call.cancelled: raise newGrpcError(scCancelled, "call cancelled")
   if call.ended: raise newGrpcError(scInternal, "send after the call ended")
-  let framed = encodeMessage(msg)
+  if compressed and not call.gzipOut:
+    raise newGrpcError(scInternal, "a compressed message needs compression = \"gzip\" on the call")
+  let framed = if compressed: encodeMessage(gzipCompress(msg), compressed = true)
+               else: encodeMessage(msg)
   call.mapErrors:
     call.st.send(framed)
+
+proc send*(call: var ClientCall; msg: openArray[byte]) =
+  ## Sends one message, compressed if the call was opened with compression.
+  call.send(msg, call.gzipOut)
 
 proc closeSend*(call: var ClientCall) =
   ## No more messages from the client.
@@ -190,31 +209,28 @@ proc recv*(call: var ClientCall; msg: var seq[byte]): bool =
   call.mapErrors:
     call.readHeaders()
     while true:
-      let avail = call.buf.len - call.pos
-      if avail >= 5:
-        let b = call.buf
-        let p = call.pos
-        if b[p] != 0:
-          call.fail(scUnimplemented, "compressed message without grpc-encoding")
-        let n = (b[p+1].int shl 24) or (b[p+2].int shl 16) or
-                (b[p+3].int shl 8) or b[p+4].int
-        if n > call.maxMessage:
-          call.cancel()
-          raise newGrpcError(scResourceExhausted, "message of " & $n &
-                             " bytes exceeds the limit of " & $call.maxMessage)
-        if avail >= 5 + n:
-          msg = call.buf[p + 5 ..< p + 5 + n]
-          call.pos += 5 + n
-          if call.pos == call.buf.len:
-            call.buf.setLen(0)
-            call.pos = 0
+      var payload: seq[byte]
+      var compressed = false
+      var bad: ref GrpcError
+      try:
+        if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+          if compressed:
+            if call.respEncoding != "gzip":
+              raise newGrpcError(scInternal, "compressed message with grpc-encoding " &
+                                 call.respEncoding.escape)
+            msg = gzipDecompress(payload, call.maxMessage)
+          else:
+            msg = move payload
+          call.lastCompressed = compressed
           return true
+      except GrpcError as e:
+        bad = e
+      if bad != nil:
+        call.cancel()
+        raise bad
       var chunk: seq[byte]
       if call.st.recvData(chunk):
-        if call.pos > 0:
-          call.buf = call.buf[call.pos .. ^1]
-          call.pos = 0
-        call.buf.add chunk
+        call.buf.appendData(call.pos, chunk)
       else:
         if call.buf.len - call.pos > 0:
           call.fail(scInternal, "truncated message at end of stream")
@@ -224,10 +240,10 @@ proc recv*(call: var ClientCall; msg: var seq[byte]): bool =
 
 proc unaryCall*(ch: GrpcChannel; path: string; request: openArray[byte];
                 metadata: Metadata = @[]; timeoutMs = -1;
-                maxMessage = defaultMaxMessage): UnaryResult =
+                maxMessage = defaultMaxMessage; compression = ""): UnaryResult =
   ## Sends one message and returns the one reply. Raises GrpcError for any
   ## status other than OK.
-  var call = ch.newCall(path, metadata, timeoutMs, maxMessage)
+  var call = ch.newCall(path, metadata, timeoutMs, maxMessage, compression)
   try:
     call.send(request)
     call.closeSend()

@@ -38,10 +38,22 @@ Rejections across implementations:
 | unimplemented_method | pass | pass | pass |
 | unimplemented_service | pass | pass | pass |
 | custom_metadata (unary and duplex) | pass | pass | pass |
+| client_compressed_unary | pass | pass | pass* |
+| server_compressed_unary | pass | pass* | pass* |
+| client_compressed_streaming | pass | pass* | pass* |
+| server_compressed_streaming | pass | pass* | pass* |
 
-Not covered yet: the compression cases (client_compressed_*,
-server_compressed_*), the Google auth cases (they need Google credentials),
-and the load-balancing and xDS cases.
+\* grpc-go cannot report whether a message arrived compressed, and it
+compresses a whole stream or none of it. So the Go peer cannot verify the
+compressed flag on responses, and it sends every message of a compressed
+client stream compressed. As a server it does not check `expect_compressed`,
+so the Nim client runs against it with `--lenient-compression`, which skips the
+probes and the checks that a message is *not* compressed. Nim to Nim runs
+every check. The grpc-go client runs the probes against the Nim server, and
+they pass.
+
+Not covered yet: the Google auth cases (they need Google credentials), and the
+load-balancing and xDS cases.
 
 ## Running
 

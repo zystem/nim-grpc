@@ -121,3 +121,85 @@ suite "handler errors":
       check code == scAborted
     ch.close()
     srv.stop()
+
+import grpc/compress/gzip
+import grpc/h2/blocking as h2b
+
+suite "compression":
+  test "gzip round trip":
+    let data = newSeq[byte](100_000)
+    let z = gzipCompress(data)
+    check z.len < 1000
+    check gzipDecompress(z, 100_000) == data
+
+  test "decompression stops at the limit (zip bomb)":
+    let bomb = gzipCompress(newSeq[byte](50_000_000))   # ~50 KB compressed
+    check bomb.len < 100_000
+    var code = scOk
+    try: discard gzipDecompress(bomb, 4 * 1024 * 1024)
+    except GrpcError as e: code = e.code
+    check code == scResourceExhausted
+
+  test "corrupt gzip is INTERNAL":
+    var z = gzipCompress(@[1'u8, 2, 3, 4, 5, 6, 7, 8])
+    z[z.len div 2] = z[z.len div 2] xor 0xff
+    var code = scOk
+    try: discard gzipDecompress(z, 1000)
+    except GrpcError as e: code = e.code
+    check code == scInternal
+
+  proc rawCall(port: int; extra: seq[Header]; body: seq[byte]): h2b.Response =
+    let c = h2b.dial("127.0.0.1", Port(port))
+    var hs = @[(":method", "POST"), (":scheme", "http"), (":authority", "x"),
+               (":path", "/grpc.testing.TestService/UnaryCall"),
+               ("content-type", "application/grpc"), ("te", "trailers")]
+    hs.add extra
+    result = c.request(hs, body, timeoutMs = 5000)
+    c.close()
+
+  proc statusOf(r: h2b.Response): string =
+    for blk in [r.trailers, r.headers]:
+      for (k, v) in blk:
+        if k == "grpc-status": return v
+
+  var srv: GrpcServer
+  setup:
+    srv = newTestServer()
+    srv.start()
+  teardown:
+    srv.stop()
+
+  test "an unsupported grpc-encoding is UNIMPLEMENTED, with what is accepted":
+    let r = rawCall(srv.port, @[("grpc-encoding", "snappy")],
+                    encodeMessage(SimpleRequest().encode))
+    check r.statusOf == $ord(scUnimplemented)
+    var accept = ""
+    for (k, v) in r.headers:
+      if k == "grpc-accept-encoding": accept = v
+    check accept == "gzip"
+
+  test "a compressed message without grpc-encoding is INTERNAL":
+    let msg = encodeMessage(gzipCompress(SimpleRequest().encode), compressed = true)
+    check rawCall(srv.port, @[], msg).statusOf == $ord(scInternal)
+
+  test "the size limit applies after decompression":
+    let small = newGrpcServer(maxMessage = 1000)
+    small.registerTestService(TestServiceHandlers(unaryCall: proc (ctx: var ServerContext;
+        req: SimpleRequest): SimpleResponse {.nimcall, gcsafe.} = SimpleResponse()))
+    small.start()
+    let req = SimpleRequest(payload: Payload(body: newSeq[byte](100_000)))
+    let msg = encodeMessage(gzipCompress(req.encode), compressed = true)
+    check msg.len < 1000
+    check rawCall(small.port, @[("grpc-encoding", "gzip")], msg).statusOf ==
+          $ord(scResourceExhausted)
+    small.stop()
+
+  test "a compressed client call and a compressed reply":
+    let ch = dial("127.0.0.1", srv.port)
+    let svc = newTestServiceClient(ch)
+    let r = svc.unaryCall(SimpleRequest(responseSize: 50_000, payload: Payload(body: newSeq[byte](50_000)),
+                                        expectCompressed: BoolValue(value: true),
+                                        responseCompressed: BoolValue(value: true)),
+                          compression = "gzip", timeoutMs = 5000)
+    check r.payload.body.len == 50_000
+    ch.close()

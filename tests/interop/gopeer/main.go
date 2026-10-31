@@ -20,10 +20,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+var probe = new(bool)
 
 var (
 	reqSizes  = []int{27182, 8, 1828, 45904}
@@ -60,12 +63,21 @@ func (server) UnaryCall(ctx context.Context, in *testpb.SimpleRequest) (*testpb.
 	if st := in.GetResponseStatus(); st != nil && st.Code != 0 {
 		return nil, status.Error(codes.Code(st.Code), st.Message)
 	}
+	if in.GetResponseCompressed().GetValue() {
+		grpc.SetSendCompressor(ctx, "gzip")
+	}
 	return &testpb.SimpleResponse{
 		Payload: &testpb.Payload{Body: make([]byte, in.GetResponseSize())},
 	}, nil
 }
 
 func (server) StreamingOutputCall(in *testpb.StreamingOutputCallRequest, s testpb.TestService_StreamingOutputCallServer) error {
+	for _, p := range in.GetResponseParameters() {
+		// grpc-go compresses a whole stream or none of it.
+		if p.GetCompressed().GetValue() {
+			grpc.SetSendCompressor(s.Context(), "gzip")
+		}
+	}
 	for _, p := range in.GetResponseParameters() {
 		if us := p.GetIntervalUs(); us > 0 {
 			time.Sleep(time.Duration(us) * time.Microsecond)
@@ -210,6 +222,82 @@ var cases = []testCase{
 			}
 		}
 		return expectCode(err, codes.DeadlineExceeded, "")
+	}},
+	{"client_compressed_unary", func(ctx context.Context, cc *grpc.ClientConn) error {
+		c := testpb.NewTestServiceClient(cc)
+		req := &testpb.SimpleRequest{ResponseSize: 314159, Payload: &testpb.Payload{Body: make([]byte, 271828)},
+			ExpectCompressed: &testpb.BoolValue{Value: true}}
+		if *probe { // the server must notice an uncompressed request
+			if err := expectCode(func() error { _, err := c.UnaryCall(ctx, req); return err }(), codes.InvalidArgument, ""); err != nil {
+				return fmt.Errorf("probe: %v", err)
+			}
+		}
+		r, err := c.UnaryCall(ctx, req, grpc.UseCompressor("gzip"))
+		if err != nil {
+			return err
+		}
+		if len(r.GetPayload().GetBody()) != 314159 {
+			return fmt.Errorf("payload size")
+		}
+		return nil
+	}},
+	{"server_compressed_unary", func(ctx context.Context, cc *grpc.ClientConn) error {
+		// grpc-go cannot tell whether a response arrived compressed; this
+		// checks that a compressed response decodes.
+		for _, comp := range []bool{true, false} {
+			r, err := testpb.NewTestServiceClient(cc).UnaryCall(ctx, &testpb.SimpleRequest{
+				ResponseSize: 314159, ResponseCompressed: &testpb.BoolValue{Value: comp}})
+			if err != nil {
+				return err
+			}
+			if len(r.GetPayload().GetBody()) != 314159 {
+				return fmt.Errorf("payload size")
+			}
+		}
+		return nil
+	}},
+	{"client_compressed_streaming", func(ctx context.Context, cc *grpc.ClientConn) error {
+		// grpc-go compresses all messages of a stream or none: both say so.
+		s, err := testpb.NewTestServiceClient(cc).StreamingInputCall(ctx, grpc.UseCompressor("gzip"))
+		if err != nil {
+			return err
+		}
+		for _, n := range []int{27182, 45904} {
+			if err := s.Send(&testpb.StreamingInputCallRequest{Payload: &testpb.Payload{Body: make([]byte, n)},
+				ExpectCompressed: &testpb.BoolValue{Value: true}}); err != nil {
+				return err
+			}
+		}
+		r, err := s.CloseAndRecv()
+		if err != nil {
+			return err
+		}
+		if r.GetAggregatedPayloadSize() != 73086 {
+			return fmt.Errorf("aggregated %d", r.GetAggregatedPayloadSize())
+		}
+		return nil
+	}},
+	{"server_compressed_streaming", func(ctx context.Context, cc *grpc.ClientConn) error {
+		s, err := testpb.NewTestServiceClient(cc).StreamingOutputCall(ctx, &testpb.StreamingOutputCallRequest{
+			ResponseParameters: []*testpb.ResponseParameters{
+				{Size: 31415, Compressed: &testpb.BoolValue{Value: true}},
+				{Size: 92653, Compressed: &testpb.BoolValue{Value: false}}}})
+		if err != nil {
+			return err
+		}
+		for _, n := range []int{31415, 92653} {
+			r, err := s.Recv()
+			if err != nil {
+				return err
+			}
+			if len(r.GetPayload().GetBody()) != n {
+				return fmt.Errorf("size %d", len(r.GetPayload().GetBody()))
+			}
+		}
+		if _, err := s.Recv(); err != io.EOF {
+			return fmt.Errorf("want EOF, got %v", err)
+		}
+		return nil
 	}},
 	{"client_streaming", func(ctx context.Context, cc *grpc.ClientConn) error {
 		s, err := testpb.NewTestServiceClient(cc).StreamingInputCall(ctx)
@@ -430,6 +518,7 @@ func main() {
 	only := flag.String("cases", "", "comma-separated case names (default: all)")
 	mode := flag.String("tls", "", "\"\", \"tls\" or \"mtls\"")
 	certs := flag.String("certs", "certs", "directory with ca.pem, server.*, client.*")
+	flag.BoolVar(probe, "probe", true, "run the compression probes (the server must check expect_compressed)")
 	flag.Parse()
 	if *role == "server" {
 		lis, err := net.Listen("tcp", *addr)

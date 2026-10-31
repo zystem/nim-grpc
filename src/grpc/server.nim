@@ -13,7 +13,7 @@
 ## (any other status). Any other CatchableError becomes UNKNOWN.
 
 import std/[tables, strutils]
-import ./status, ./wire, ./h2/blocking
+import ./status, ./wire, ./h2/blocking, ./compress/gzip
 export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig, blocking.TlsError
 
 type
@@ -23,6 +23,10 @@ type
     timeoutMs*: int          ## the client's grpc-timeout, or -1
     headers*: Metadata       ## initial metadata to send back (before the first message)
     trailers*: Metadata      ## trailing metadata to send back
+    requestCompressed*: bool ## whether the last request message was compressed
+    responseCompression*: string
+      ## "gzip" to compress responses; set before the first message is sent.
+      ## Ignored if the client does not accept gzip.
 
   ServerCall* = object
     st: ptr ServerStream
@@ -32,6 +36,9 @@ type
     inEnded: bool
     headersSent: bool
     maxMessage: int
+    reqEncoding: string      ## the client's grpc-encoding
+    clientAcceptsGzip: bool
+    gzipOut: bool            ## responses carry grpc-encoding: gzip
 
   UnaryHandler* = proc (ctx: var ServerContext; request: seq[byte]): seq[byte]
     {.nimcall, gcsafe, raises: [CatchableError].}
@@ -75,23 +82,18 @@ proc recv*(call: var ServerCall; msg: var seq[byte]): bool =
   ## The next message from the client; false once the client has half-closed.
   ## Raises GrpcError (CANCELLED, DEADLINE_EXCEEDED, ...) if the call is gone.
   while true:
-    let avail = call.buf.len - call.pos
-    if avail >= 5:
-      let p = call.pos
-      if call.buf[p] != 0:
-        raise newGrpcError(scUnimplemented, "compressed message without grpc-encoding")
-      let n = (call.buf[p+1].int shl 24) or (call.buf[p+2].int shl 16) or
-              (call.buf[p+3].int shl 8) or call.buf[p+4].int
-      if n > call.maxMessage:
-        raise newGrpcError(scResourceExhausted, "message of " & $n &
-                           " bytes exceeds the limit of " & $call.maxMessage)
-      if avail >= 5 + n:
-        msg = call.buf[p + 5 ..< p + 5 + n]
-        call.pos += 5 + n
-        if call.pos == call.buf.len:
-          call.buf.setLen(0)
-          call.pos = 0
-        return true
+    var payload: seq[byte]
+    var compressed = false
+    if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+      if compressed:
+        if call.reqEncoding != "gzip":
+          raise newGrpcError(scInternal, "compressed message with grpc-encoding " &
+                             call.reqEncoding.escape)
+        msg = gzipDecompress(payload, call.maxMessage)
+      else:
+        msg = move payload
+      call.ctx.requestCompressed = compressed
+      return true
     if call.inEnded:
       if call.buf.len - call.pos > 0:
         raise newGrpcError(scInternal, "truncated message at end of stream")
@@ -104,17 +106,15 @@ proc recv*(call: var ServerCall; msg: var seq[byte]): bool =
     except H2Error as e:
       err = e.toGrpc       # raised outside the except block (see threadBody)
     if err != nil: raise err
-    if more:
-      if call.pos > 0:
-        call.buf = call.buf[call.pos .. ^1]
-        call.pos = 0
-      call.buf.add chunk
-    else:
-      call.inEnded = true
+    if more: call.buf.appendData(call.pos, chunk)
+    else: call.inEnded = true
 
 proc sendResponseHeaders(call: var ServerCall) =
   if call.headersSent: return
-  var hs = @[(":status", "200"), ("content-type", grpcContentType)]
+  var hs = @[(":status", "200"), ("content-type", grpcContentType), acceptEncodingHeader]
+  if call.ctx.responseCompression == "gzip" and call.clientAcceptsGzip:
+    hs.add ("grpc-encoding", "gzip")
+    call.gzipOut = true
   hs.add call.ctx.headers.toWire
   var err: ref GrpcError
   try:
@@ -124,15 +124,25 @@ proc sendResponseHeaders(call: var ServerCall) =
   if err != nil: raise err
   call.headersSent = true
 
-proc send*(call: var ServerCall; msg: openArray[byte]) =
-  ## Sends one message; the initial metadata (`ctx.headers`) goes out first.
+proc send*(call: var ServerCall; msg: openArray[byte]; compressed: bool) =
+  ## Sends one message, compressed if `compressed` and the response uses gzip
+  ## (`ctx.responseCompression`, accepted by the client); otherwise plain.
   call.sendResponseHeaders()
+  let framed = if compressed and call.gzipOut:
+                 encodeMessage(gzipCompress(msg), compressed = true)
+               else: encodeMessage(msg)
   var err: ref GrpcError
   try:
-    call.st[].sendData(encodeMessage(msg))
+    call.st[].sendData(framed)
   except H2Error as e:
     err = e.toGrpc
   if err != nil: raise err
+
+proc send*(call: var ServerCall; msg: openArray[byte]) =
+  ## Sends one message; the initial metadata (`ctx.headers`) goes out first.
+  ## Compressed when the response uses gzip (see `ctx.responseCompression`).
+  call.sendResponseHeaders()
+  call.send(msg, call.gzipOut)
 
 proc isCancelled*(call: ServerCall): bool =
   ## True once the client has gone away or reset the call.
@@ -142,7 +152,7 @@ proc finishCall(call: var ServerCall; code: StatusCode; msg: string; md: Metadat
   ## Ends the call with a status: trailers after a response, or trailers-only.
   var hs: seq[Header]
   if not call.headersSent:
-    hs = @[(":status", "200"), ("content-type", grpcContentType)]
+    hs = @[(":status", "200"), ("content-type", grpcContentType), acceptEncodingHeader]
   hs.add ("grpc-status", $ord(code))
   if msg.len > 0: hs.add ("grpc-message", encodeStatusMessage(msg))
   hs.add md.toWire
@@ -157,13 +167,18 @@ proc finishCall(call: var ServerCall; code: StatusCode; msg: string; md: Metadat
 proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: [].} =
   let reg = cast[ptr Registry](userData)
   var ctx = ServerContext(timeoutMs: -1)
-  var meth, contentType = ""
+  var meth, contentType, encoding = ""
+  var acceptsGzip = false
   for (k, v) in st.headers:
     case k
     of ":path": ctx.path = v
     of ":method": meth = v
     of "content-type": contentType = v
     of "grpc-timeout": ctx.timeoutMs = parseTimeout(v)
+    of "grpc-encoding": encoding = v
+    of "grpc-accept-encoding":
+      for e in v.split(','):
+        if e.strip == "gzip": acceptsGzip = true
     else: discard
   try:
     if meth != "POST":
@@ -176,8 +191,13 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
     return
   st.setTimeout(ctx.timeoutMs)
   ctx.metadata = fromWire(st.headers)
-  var call = ServerCall(st: st.addr, ctx: ctx.addr, maxMessage: reg.maxMessage)
+  var call = ServerCall(st: st.addr, ctx: ctx.addr, maxMessage: reg.maxMessage,
+                        reqEncoding: encoding, clientAcceptsGzip: acceptsGzip)
 
+  if encoding.len > 0 and encoding notin supportedEncodings:
+    call.finishCall(scUnimplemented, "grpc-encoding " & encoding.escape &
+                    " is not supported", @[])
+    return
   if ctx.path notin reg.methods:
     call.finishCall(scUnimplemented, "unknown method " & ctx.path, @[])
     return
