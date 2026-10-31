@@ -64,7 +64,7 @@ type
     tlsConf: TlsConfig    ## client: keeps the config alive
     plainOut: seq[byte]   ## TLS: session output the engine has not taken yet
     tlsIn: seq[byte]      ## TLS: records the engine has not taken yet
-    reader, writer: Thread[ptr ConnObj]
+    ioRunning: int        ## reader/writer loops still running for this connection
   Conn* = ref ConnObj
 
   # ---- server side
@@ -312,8 +312,15 @@ proc pumpTlsInLocked(c: ptr ConnObj) =
   if app.len > 0: c.sess.recv(app)
   if c.tls.isClosed: raise newException(TlsError, c.tls.errorMessage)
 
-proc readerLoop(c: ptr ConnObj) {.thread.} =
-  threadBody:
+proc ioDone(c: ptr ConnObj) =
+  acquire(c.lock)
+  dec c.ioRunning
+  broadcast(c.cond)
+  release(c.lock)
+
+proc readerLoop(c: ptr ConnObj) =
+  defer: c.ioDone()
+  block:
     var buf = newSeq[byte](readChunk)
     while true:
       var n = 0
@@ -345,8 +352,9 @@ proc readerLoop(c: ptr ConnObj) {.thread.} =
       release(c.lock)
       if stop: break
 
-proc writerLoop(c: ptr ConnObj) {.thread.} =
-  threadBody:
+proc writerLoop(c: ptr ConnObj) =
+  defer: c.ioDone()
+  block:
     while true:
       acquire(c.lock)
       while c.outQ.len == 0 and not c.closed:
@@ -389,27 +397,95 @@ proc newConn(sock: Socket; sess: H2Session; server: ptr ServerObj): Conn =
   initCond(result.cond)
   result.outQ = initDeque[seq[byte]]()
 
+# ------------------------------------------------------------ I/O thread pool
+#
+# Reader and writer loops run on long-lived threads shared by every
+# connection in the process, client or server. A thread per connection would
+# be simpler, but Nim's allocator does not reclaim the heap of a thread that
+# exits while memory it allocated is still alive elsewhere, which is exactly
+# what a connection's reader leaves behind: the server grew by ~86 KiB per
+# connection. Pooled threads never exit, so their heaps are reused.
+
+type
+  IoJob = object
+    conn: ptr ConnObj
+    reader: bool
+  IoPool = object
+    lock: Lock
+    cond: Cond
+    jobs: Deque[IoJob]
+    idle: int
+    threads: int
+
+var ioPool: ptr IoPool
+var ioPoolOnce: Atomic[int]     # 0: none, 1: being made, 2: ready
+
+proc ioThread(p: ptr IoPool) {.thread.} =
+  while true:
+    acquire(p.lock)
+    inc p.idle
+    while p.jobs.len == 0:
+      wait(p.cond, p.lock)
+    dec p.idle
+    let job = p.jobs.popFirst()
+    release(p.lock)
+    if job.reader: readerLoop(job.conn) else: writerLoop(job.conn)
+    setCurrentException(nil)    # drop any exception the loop left behind
+
+proc getIoPool(): ptr IoPool =
+  if ioPoolOnce.load(moAcquire) == 2: return ioPool
+  var expected = 0
+  if ioPoolOnce.compareExchange(expected, 1):
+    let p = createShared(IoPool)
+    initLock(p.lock)
+    initCond(p.cond)
+    p.jobs = initDeque[IoJob]()
+    ioPool = p
+    ioPoolOnce.store(2, moRelease)
+  else:
+    while ioPoolOnce.load(moAcquire) != 2: cpuRelax()
+  ioPool
+
+proc ioSubmit(c: ptr ConnObj; reader: bool) =
+  let p = getIoPool()
+  acquire(p.lock)
+  p.jobs.addLast IoJob(conn: c, reader: reader)
+  if p.jobs.len > p.idle:
+    # Threads live for the rest of the process; the Thread object must not
+    # move, so it lives in shared memory.
+    let th = createShared(Thread[ptr IoPool])
+    createThread(th[], ioThread, p)
+    inc p.threads
+  signal(p.cond)
+  release(p.lock)
+
 proc start(c: Conn) =
   acquire(c.lock)
   c.queueOutputLocked()     # client preface / SETTINGS
+  c.ioRunning = 2
   release(c.lock)
-  createThread(c.reader, readerLoop, c[].addr)
-  createThread(c.writer, writerLoop, c[].addr)
+  ioSubmit(c, reader = true)
+  ioSubmit(c, reader = false)
 
 proc stopThreads(c: Conn) =
+  ## Closes the connection (GOAWAY, TLS close_notify) and waits until its
+  ## reader and writer loops have returned.
   acquire(c.lock)
   if not c.closed:
     try:
       c.sess.goAway()
       c.outQBytes = 0                  # GOAWAY must get out
       c.queueOutputLocked()
+      if c.tls != nil and not c.tls.isClosed:
+        c.tls.close()                  # close_notify
+        c.queueOutputLocked()
     except CatchableError: discard
     c.closed = true
     for st in c.streams.mvalues: st.closed = true
     broadcast(c.cond)
+  while c.ioRunning > 0:
+    wait(c.cond, c.lock)               # the writer drains, then shuts the socket down
   release(c.lock)
-  joinThread(c.writer)            # drains the queue, then shuts the socket down
-  joinThread(c.reader)
 
 # ------------------------------------------------------------ shared stream I/O
 
@@ -636,7 +712,7 @@ proc reap(s: ptr ServerObj) =
   var keep: seq[Conn]
   for c in s.conns:
     acquire(c.lock)
-    let done = c.closed and c.pending == 0
+    let done = c.closed and c.pending == 0 and c.ioRunning == 0
     release(c.lock)
     if done:
       c.stopThreads()

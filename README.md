@@ -120,3 +120,9 @@ Measured on Linux x86-64, glibc, `-d:release`:
   linked in. It needs only libc.
 - Client RSS: 2.9 MiB after the first call over TLS, still 2.9 MiB after 1,000
   more calls, and 3.2 MiB after another 200 TLS connect/close cycles.
+- Server RSS (`tools/memprobe.sh`): 2.9 MiB plaintext and 3.5 MiB with TLS
+  after 200 connections, the same as after 50. Connection reader and writer
+  loops run on a process-wide pool of long-lived threads. With a thread per
+  connection the server grew by about 86 KiB per connection: Nim's allocator
+  keeps the heap of a thread that exits while memory it allocated is still in
+  use elsewhere.

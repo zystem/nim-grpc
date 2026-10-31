@@ -11,3 +11,4 @@ nimcache/
 /tools/*
 !/tools/*.nim
 /nimcache/
+!/tools/*.sh
