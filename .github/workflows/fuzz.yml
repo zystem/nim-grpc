@@ -1,0 +1,52 @@
+name: Fuzz
+
+# The parsers that face the network (gRPC framing, gzip, Protobuf, the HTTP/2 session), under
+# AddressSanitizer, once a week. tools/fuzz.nim is a mutation fuzzer, not coverage-guided.
+# A finding uploads the input that was running and opens an issue; it does not block merges.
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fuzz
+        id: fuzz
+        env:
+          OUT: fuzz-out
+        run: tools/fuzz.sh "${{ github.event.inputs.seconds || '300' }}" 2>&1 | tee fuzz.txt; exit "${PIPESTATUS[0]}"
+      - name: Keep the reproducer
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-finding
+          path: |
+            fuzz-out/
+            fuzz.txt
+          retention-days: 90
+      - name: Open an issue on a finding
+        if: failure() && steps.fuzz.outcome == 'failure' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="The weekly fuzz run found a crash or hang: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (the input is in the artifact fuzz-finding, file current-TARGET.bin)"$'\n\n```\n'"$(tail -n 25 fuzz.txt)"$'\n```'
+          gh issue create --title "Fuzz finding" --body "$body"

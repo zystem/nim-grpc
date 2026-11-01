@@ -132,6 +132,14 @@ Linux x86-64, `-d:release`, one thread (`tools/asyncload.nim`):
   connection). `.github/workflows/soak.yml` repeats the measurement each week
   (`tools/soak.sh`, plain and TLS) and fails when it passes 60 and 100 KiB, or when
   the server's memory or descriptors grow during connection churn.
+- Where it goes (heaptrack, `tools/profile.sh`, weekly in `.github/workflows/profile.yml`;
+  1000 held connections, peak heap about 41 KiB each without TLS): 16 KiB is nghttp2's frame
+  buffer, allocated with each session whether or not it is used; about 12 KiB is Nim
+  sequences (read and write buffers and queues); about 5 KiB Nim objects (futures, streams,
+  the connection); 2.8 KiB the nghttp2 session itself; 1 KiB each for the HPACK encoder
+  and decoder tables. With TLS the connection grows to about 84 KiB, of which 40 KiB is
+  the BearSSL engine and its two record buffers (`gtls_conn`, `src/grpc/tls/gtls.c`).
+  The frame buffer and the TLS record buffers are the two places to save memory.
   The connection reads straight from that buffer, with no buffer of its own.
 - 5,000 concurrent unary calls on one channel, and 1,000 concurrent streams on
   one connection, from one thread (`tests/tasyncgrpc.nim`, `tests/tasynch2.nim`).

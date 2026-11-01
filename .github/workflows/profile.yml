@@ -1,0 +1,45 @@
+name: Memory profile
+
+# Heap profile (heaptrack) of the chronos server with 1000 connections held open, plain and TLS,
+# once a week: where the memory per connection goes. The summary is in the run's summary page and the
+# raw files are kept as artifacts. It reports; it does not fail (the limits are in soak.yml).
+on:
+  schedule:
+    - cron: "53 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          extra-packages: heaptrack
+      - name: Build the probe with symbols
+        run: nim c -d:release --debugger:native -d:useMalloc --hints:off --nimcache:nimcache/prof -o:/tmp/asyncload_prof tools/asyncload.nim
+      - name: Profile, plain
+        run: OUT=profile-plain PORT=10081 tools/profile.sh
+      - name: Profile, TLS
+        run: OUT=profile-tls PORT=10082 tools/profile.sh --tls
+      - name: Summary
+        if: always()
+        run: |
+          for m in plain tls; do
+            { echo "### $m"; echo '```'; cat profile-$m/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: heap-profile
+          path: |
+            profile-plain/
+            profile-tls/
+          retention-days: 30
