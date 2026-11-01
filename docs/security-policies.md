@@ -4,7 +4,7 @@ The rules the project holds itself to; the automatic parts are in [`.github/work
 
 ## Findings in dependencies and licenses (software composition analysis)
 
-The library depends on `bearssl` and `chronos` (nimble, and their dependencies), and links nghttp2 and zlib (C). Tools: Dependabot for the GitHub Actions of the CI, Dependency Review on every pull request (it fails on a vulnerability of High or Critical severity and on a license outside an allowed list), and a review of the security announcements of nghttp2, BearSSL and zlib when a release is made (their advisories are public: nghttp2.org, bearssl.org, zlib.net). Nimble has no lock file here and no automatic scanner, so this part is manual and is a known gap.
+The library depends on `bearssl` and `chronos` (nimble, and their dependencies), and links nghttp2 and zlib (C). Tools: Dependabot for the GitHub Actions of the CI, Renovate (`renovate.json`) for the Nim version the CI uses (Dependabot cannot see it), Dependency Review on every pull request (it fails on a vulnerability of High or Critical severity and on a license outside an allowed list), and a review of the security announcements of nghttp2, BearSSL and zlib when a release is made (their advisories are public: nghttp2.org, bearssl.org, zlib.net). Nimble has no lock file here and no automatic scanner, so this part is manual and is a known gap.
 
 Threshold for remediation of a finding about a vulnerability:
 
