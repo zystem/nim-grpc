@@ -1,0 +1,686 @@
+## HTTP/2 over chronos: the same sans-I/O session as the blocking adapter,
+## driven by one event loop instead of threads.
+##
+## Per connection three tasks run on the loop: a reader (socket -> TLS ->
+## session -> stream events), a writer (session -> TLS -> socket, one write in
+## flight, at most `maxOutQueue` bytes framed ahead) and, with keepalive, a
+## pinger. A sender awaits while its stream holds more than `maxStreamBuffer`
+## unsent bytes, so a slow peer slows the producer down.
+##
+## Everything here runs on the thread that owns the event loop; nothing may
+## be shared with other threads.
+##
+## Server handlers are futures. When a call ends abnormally (the client reset
+## it, its deadline passed, the connection closed) its handler future is
+## cancelled, so whatever it awaits stops right away.
+
+import std/[tables, deques]
+import pkg/chronos
+import ./session, ./common, ../tls/tls
+
+export session.Header, session.H2Error, tls, common.H2Timeout,
+       common.H2StreamClosed, common.Keepalive, common.PingPolicy
+
+type
+  Task = Future[void].Raising([])   ## a loop task or handler; never fails
+
+  AsyncH2Stream* = ref object
+    ## One request stream: opened by `openStream` on a client, handed to the
+    ## handler on a server.
+    conn: AsyncH2Conn
+    id*: int32
+    headers*: seq[Header]      ## server: the request HEADERS
+    blocks: seq[seq[Header]]   ## HEADERS blocks received
+    inbuf: seq[byte]           ## body bytes received and not yet taken
+    inEnded: bool              ## END_STREAM received
+    outEnded: bool             ## we sent END_STREAM (or trailers)
+    responded: bool            ## server: response HEADERS submitted
+    closed: bool
+    timedOut: bool             ## closed by its deadline
+    released: bool
+    errorCode: uint32          ## RST_STREAM / GOAWAY code, 0 on a clean close
+    hasDeadline: bool
+    deadline: Moment
+    timer: TimerCallback
+    waiters: seq[Future[void]]
+    handler: Task              ## server: the running handler
+
+  AsyncH2Conn* = ref object
+    transp: StreamTransport
+    sess: H2Session
+    tls: TlsConn
+    tlsConf: TlsConfig
+    tlsIn: seq[byte]
+    plainOut: seq[byte]
+    outQ: Deque[seq[byte]]
+    outQBytes: int
+    writeEv: AsyncEvent
+    closedEv: AsyncEvent
+    roomWaiters: seq[Future[void]]
+    streams: Table[int32, AsyncH2Stream]
+    closed: bool
+    failure: string
+    server: AsyncH2Server      ## nil for a client connection
+    lastDispatched: int32
+    ka: Keepalive
+    policy: PingPolicy
+    lastRead: Moment
+    pingOutstanding: bool
+    pingSent: Moment
+    lastPingRecv: Moment
+    pingStrikes: int
+    goawayReceived: bool
+    readerF, writerF, pingerF: Task
+
+  AsyncStreamHandler* = proc (st: AsyncH2Stream; userData: pointer): Future[void]
+    {.gcsafe, raises: [].}
+    ## Starts on the loop when the request HEADERS arrive. If its future
+    ## completes without the response having ended, the stream is reset with
+    ## INTERNAL_ERROR.
+
+  AsyncH2Server* = ref object
+    srv: StreamServer
+    handler: AsyncStreamHandler
+    userData: pointer
+    tls: TlsConfig
+    ka: Keepalive
+    policy: PingPolicy
+    conns: seq[AsyncH2Conn]
+    stopping: bool
+
+# ------------------------------------------------------------ waiting
+
+proc notify(st: AsyncH2Stream) =
+  if st.waiters.len == 0: return
+  let ws = move st.waiters
+  st.waiters = @[]
+  for f in ws:
+    if not f.finished: f.complete()
+
+proc notifyRoom(c: AsyncH2Conn) =
+  if c.roomWaiters.len == 0: return
+  let ws = move c.roomWaiters
+  c.roomWaiters = @[]
+  for f in ws:
+    if not f.finished: f.complete()
+
+proc changed(st: AsyncH2Stream; room = false): Future[void] =
+  ## Completes at the next change to the stream (or, with `room`, when the
+  ## writer has drained some output).
+  result = newFuture[void]("h2.stream.changed")
+  st.waiters.add result
+  if room: st.conn.roomWaiters.add result
+
+# ------------------------------------------------------------ connection internals
+
+proc queueOutput(c: AsyncH2Conn; force = false) =
+  ## Moves what the session produced (encrypted, with TLS) to the writer.
+  if c.outQBytes >= maxOutQueue and not force: return
+  let o = c.sess.takeOutput()
+  if c.tls == nil:
+    if o.len > 0:
+      c.outQBytes += o.len
+      c.outQ.addLast o
+  else:
+    c.plainOut.add o
+    while true:
+      var progressed = false
+      if c.plainOut.len > 0:
+        let n = c.tls.pushApp(c.plainOut)
+        if n > 0:
+          c.plainOut.dropPrefix(n)
+          progressed = true
+      if c.plainOut.len == 0: c.tls.flush()
+      let recs = c.tls.pullRecords()
+      if recs.len > 0:
+        c.outQBytes += recs.len
+        c.outQ.addLast recs
+        progressed = true
+      if not progressed or (c.outQBytes >= maxOutQueue and not force): break
+  if c.outQ.len > 0: c.writeEv.fire()
+
+proc cancelHandler(st: AsyncH2Stream) =
+  ## Server: the call is over for the client before the handler ended it.
+  if st.handler != nil and not st.handler.finished and not st.outEnded:
+    st.handler.cancelSoon()
+
+proc fail(c: AsyncH2Conn; why: string) =
+  if c.closed: return
+  c.closed = true
+  if c.failure.len == 0: c.failure = why
+  for st in c.streams.values:
+    st.closed = true
+    st.notify()
+    st.cancelHandler()
+  c.notifyRoom()
+  c.writeEv.fire()
+  c.closedEv.fire()
+
+proc onDeadline(st: AsyncH2Stream) =
+  st.timer = nil
+  if st.closed: return
+  st.timedOut = true
+  let c = st.conn
+  if not c.closed and not st.released:
+    try:
+      c.sess.resetStream(st.id, CANCEL)
+      c.queueOutput()
+    except CatchableError: discard
+  st.closed = true
+  st.errorCode = CANCEL
+  st.notify()
+  st.cancelHandler()
+
+proc armDeadline(st: AsyncH2Stream; ms: int) =
+  if ms < 0: return
+  st.hasDeadline = true
+  st.deadline = Moment.now() + ms.milliseconds
+  if st.timer != nil: clearTimer(st.timer)
+  st.timer = setTimer(st.deadline, proc (arg: pointer) {.gcsafe, raises: [].} =
+    st.onDeadline())
+
+proc forget(c: AsyncH2Conn; st: AsyncH2Stream) =
+  if st.timer != nil:
+    clearTimer(st.timer)
+    st.timer = nil
+  c.streams.del(st.id)
+
+proc runHandler(c: AsyncH2Conn; st: AsyncH2Stream) {.async: (raises: []).}
+
+proc handleEvents(c: AsyncH2Conn) =
+  let isServer = c.server != nil
+  for ev in c.sess.takeEvents():
+    let st = c.streams.getOrDefault(ev.streamId)
+    case ev.kind
+    of evHeaders:
+      if st != nil:
+        st.blocks.add ev.headers
+        if ev.headersEndStream: st.inEnded = true
+        st.notify()
+      elif isServer and ev.streamId > c.lastDispatched and not c.server.stopping:
+        let ns = AsyncH2Stream(conn: c, id: ev.streamId, headers: ev.headers,
+                               blocks: @[ev.headers], inEnded: ev.headersEndStream)
+        c.streams[ev.streamId] = ns
+        c.lastDispatched = ev.streamId
+        ns.handler = c.runHandler(ns)
+    of evData:
+      if st != nil:
+        st.inbuf.add ev.data
+        if ev.dataEndStream: st.inEnded = true
+        st.notify()
+    of evStreamClosed:
+      if st != nil:
+        st.closed = true
+        st.errorCode = ev.errorCode
+        st.notify()
+        if ev.errorCode != 0: st.cancelHandler()
+    of evGoAway:
+      c.goawayReceived = true
+    of evPingAck:
+      c.pingOutstanding = false
+    of evPing:
+      if isServer and c.policy.minIntervalMs > 0:
+        let now = Moment.now()
+        let idle = c.streams.len == 0
+        if (idle and not c.policy.permitWithoutCalls) or
+           (c.lastPingRecv != Moment() and
+            now - c.lastPingRecv < c.policy.minIntervalMs.milliseconds):
+          inc c.pingStrikes
+        c.lastPingRecv = now
+        if c.pingStrikes > 2:
+          c.sess.goAway(ENHANCE_YOUR_CALM, "too_many_pings")
+          c.queueOutput(force = true)
+          c.fail("client sent too many pings")
+    if ev.kind in {evHeaders, evData}: c.pingStrikes = 0
+
+proc pumpTlsIn(c: AsyncH2Conn) =
+  ## Decrypts buffered records and feeds the plaintext to the session.
+  var app: seq[byte]
+  while true:
+    let k = c.tls.pushRecords(c.tlsIn)
+    if k > 0: c.tlsIn.dropPrefix(k)
+    c.tls.pullApp(app)
+    if k == 0:
+      # The engine wants to send first (handshake), or is closed.
+      let before = c.outQBytes
+      c.queueOutput()
+      if c.outQBytes == before or c.tlsIn.len == 0: break
+    elif c.tlsIn.len == 0:
+      break
+  c.tls.checkPeer()
+  if app.len > 0: c.sess.recv(app)
+  if c.tls.isClosed: raise newException(TlsError, c.tls.errorMessage)
+
+proc readerLoop(c: AsyncH2Conn) {.async: (raises: []).} =
+  var buf = newSeq[byte](readChunk)
+  while not c.closed:
+    var n = 0
+    try:
+      n = await c.transp.readOnce(buf[0].addr, buf.len)
+    except CancelledError:
+      c.fail("closed")
+      break
+    except CatchableError:
+      n = -1
+    if c.closed: break
+    if n <= 0:
+      c.fail(if n == 0: "connection closed by peer" else: "read error")
+      break
+    c.lastRead = Moment.now()
+    try:
+      if c.tls == nil:
+        c.sess.recv(buf.toOpenArray(0, n - 1))
+      else:
+        c.tlsIn.add buf.toOpenArray(0, n - 1)
+        c.pumpTlsIn()
+      c.handleEvents()
+      c.queueOutput()
+      if not c.sess.wantRead() and not c.sess.wantWrite() and c.outQ.len == 0:
+        c.fail("session finished")
+    except CatchableError as e:
+      # A connection error: nghttp2 has queued a GOAWAY; send it, then stop.
+      try: c.queueOutput(force = true)
+      except CatchableError: discard
+      c.fail(e.msg)
+
+proc writerLoop(c: AsyncH2Conn) {.async: (raises: []).} =
+  while true:
+    while c.outQ.len == 0 and not c.closed:
+      try:
+        await c.writeEv.wait()
+      except CancelledError:
+        c.fail("closed")
+      c.writeEv.clear()
+    if c.outQ.len == 0: break       # closed and drained
+    let chunk = c.outQ.popFirst()
+    var ok = true
+    try:
+      ok = (await c.transp.write(chunk)) == chunk.len
+    except CatchableError:
+      ok = false
+    c.outQBytes -= chunk.len
+    if ok:
+      try:
+        if c.tls != nil and c.tlsIn.len > 0:
+          c.pumpTlsIn()
+          c.handleEvents()
+        c.queueOutput()
+      except CatchableError as e: c.fail(e.msg)
+      c.notifyRoom()
+    else:
+      c.fail("write error")
+      c.outQ.clear()
+      c.outQBytes = 0
+  # Everything is out; closing the socket also ends the reader.
+  await c.transp.closeWait()
+
+proc pingDue(c: AsyncH2Conn): int =
+  ## Sends a due PING or closes a connection whose PING went unanswered.
+  ## Returns how long to wait (ms) before checking again, or -1 to stop.
+  if c.ka.timeMs <= 0 or c.closed: return -1
+  let now = Moment.now()
+  let timeout = (if c.ka.timeoutMs > 0: c.ka.timeoutMs else: defaultPingTimeoutMs).milliseconds
+  if c.pingOutstanding:
+    let due = c.pingSent + timeout
+    if now >= due:
+      c.fail("keepalive: no response to PING within " & $timeout.milliseconds & " ms")
+      return -1
+    return int((due - now).milliseconds) + 1
+  let due = c.lastRead + c.ka.timeMs.milliseconds
+  if now < due: return int((due - now).milliseconds) + 1
+  if c.streams.len > 0 or c.ka.withoutCalls or c.server != nil:
+    try:
+      c.sess.ping()
+      c.pingOutstanding = true
+      c.pingSent = now
+      c.queueOutput()
+    except CatchableError as e:
+      c.fail(e.msg)
+      return -1
+    return int(timeout.milliseconds) + 1
+  c.ka.timeMs                       # idle and not allowed to ping: look again later
+
+proc pingerLoop(c: AsyncH2Conn) {.async: (raises: []).} =
+  while true:
+    let ms = c.pingDue()
+    if ms < 0: break
+    try:
+      discard await withTimeout(c.closedEv.wait(), ms.milliseconds)
+    except CancelledError:
+      break
+
+proc newConn(transp: StreamTransport; sess: H2Session; server: AsyncH2Server;
+             ka: Keepalive): AsyncH2Conn =
+  AsyncH2Conn(transp: transp, sess: sess, server: server, ka: ka,
+              outQ: initDeque[seq[byte]](), writeEv: newAsyncEvent(),
+              closedEv: newAsyncEvent(), lastRead: Moment.now())
+
+proc start(c: AsyncH2Conn) =
+  c.queueOutput()             # client preface / SETTINGS
+  c.readerF = c.readerLoop()
+  c.writerF = c.writerLoop()
+  if c.ka.timeMs > 0: c.pingerF = c.pingerLoop()
+
+proc shutdown(c: AsyncH2Conn) {.async: (raises: []).} =
+  ## Sends GOAWAY (and TLS close_notify), closes the connection and waits
+  ## until its tasks have ended.
+  if not c.closed:
+    try:
+      c.sess.goAway()
+      c.queueOutput(force = true)
+      if c.tls != nil and not c.tls.isClosed:
+        c.tls.close()
+        c.queueOutput(force = true)
+    except CatchableError: discard
+    c.fail("closed")
+  if c.writerF != nil: await noCancel c.writerF
+  if c.readerF != nil: await noCancel c.readerF
+  if c.pingerF != nil: await noCancel c.pingerF
+
+# ------------------------------------------------------------ streams
+
+proc closedError(st: AsyncH2Stream): ref H2StreamClosed =
+  let c = st.conn
+  let why = if st.errorCode != 0: "reset with error " & $st.errorCode
+            elif c.failure.len > 0: c.failure
+            else: "closed"
+  newException(H2StreamClosed, "stream " & $st.id & ": " & why)
+
+proc timeoutError(st: AsyncH2Stream): ref H2Timeout =
+  newException(H2Timeout, "deadline exceeded on stream " & $st.id)
+
+template checkGone(st: AsyncH2Stream) =
+  if st.timedOut: raise st.timeoutError
+  if st.closed or st.conn.closed: raise st.closedError
+
+proc setTimeout*(st: AsyncH2Stream; ms: int) =
+  ## Server: the stream is reset with CANCEL `ms` from now (the client's
+  ## grpc-timeout); later calls raise H2Timeout and the handler is cancelled.
+  st.armDeadline(ms)
+
+proc isClosed*(st: AsyncH2Stream): bool =
+  ## True once the stream is gone (cancelled, reset, timed out, connection closed).
+  st.closed or st.conn.closed
+
+proc deadlinePassed*(st: AsyncH2Stream): bool =
+  st.timedOut or (st.hasDeadline and Moment.now() >= st.deadline)
+
+proc remainingMs*(st: AsyncH2Stream): int =
+  ## Milliseconds until the deadline (at least 0), or -1 without one.
+  if not st.hasDeadline: return -1
+  max(int((st.deadline - Moment.now()).milliseconds), 0)
+
+proc errorCode*(st: AsyncH2Stream): uint32 = st.errorCode
+  ## The RST_STREAM code the stream ended with, 0 if none.
+
+proc peerEnded*(st: AsyncH2Stream): bool = st.inEnded
+  ## True once the peer has ended its side (END_STREAM received).
+
+proc waitClosed*(st: AsyncH2Stream; ms: int): Future[bool] {.async.} =
+  ## Waits up to `ms` for the stream to close; true if it did.
+  if st.isClosed: return true
+  let until = Moment.now() + ms.milliseconds
+  while not st.isClosed:
+    let left = until - Moment.now()
+    if left <= ZeroDuration: return false
+    discard await withTimeout(st.changed(), left)
+  true
+
+proc send*(st: AsyncH2Stream; data: seq[byte]; endStream = false) {.async.} =
+  ## Queues body bytes, waiting while the stream's unsent buffer is full.
+  let c = st.conn
+  var off = 0
+  while true:
+    st.checkGone()
+    if st.outEnded: raise newException(H2Error, "stream " & $st.id & ": body already ended")
+    let room = maxStreamBuffer - c.sess.buffered(st.id)
+    let remaining = data.len - off
+    if room > 0 or remaining == 0:
+      let n = min(max(room, 0), remaining)
+      let last = n == remaining
+      if n > 0 or (last and endStream):
+        c.sess.sendData(st.id, data.toOpenArray(off, off + n - 1),
+                        endStream = last and endStream)
+        off += n
+        if last and endStream: st.outEnded = true
+        c.queueOutput()
+      if last: return
+    await st.changed(room = true)
+
+proc recvData*(st: AsyncH2Stream): Future[seq[byte]] {.async.} =
+  ## The next part of the body; empty at its end.
+  while true:
+    if st.inbuf.len > 0:
+      result = move st.inbuf
+      st.inbuf = @[]
+      return
+    if st.inEnded: return
+    st.checkGone()
+    await st.changed()
+
+proc ended*(st: AsyncH2Stream): bool = st.inEnded and st.inbuf.len == 0
+  ## The whole body has been taken.
+
+proc sendHeaders*(st: AsyncH2Stream; headers: seq[Header]; endStream = false) =
+  ## Server: the response HEADERS. With `endStream` nothing else follows.
+  st.checkGone()
+  if st.responded: raise newException(H2Error, "response HEADERS already sent")
+  let c = st.conn
+  c.sess.submitResponse(st.id, headers, endStream)
+  st.responded = true
+  if endStream: st.outEnded = true
+  c.queueOutput()
+
+proc sendTrailers*(st: AsyncH2Stream; trailers: seq[Header]) =
+  ## Ends the body with a trailing HEADERS block.
+  st.checkGone()
+  if st.outEnded: raise newException(H2Error, "response already ended")
+  st.conn.sess.sendTrailers(st.id, trailers)
+  st.outEnded = true
+  st.conn.queueOutput()
+
+proc reset*(st: AsyncH2Stream; errorCode = CANCEL) =
+  ## Resets the stream (RST_STREAM); it counts as closed from now on.
+  let c = st.conn
+  if not st.closed and not c.closed:
+    try:
+      c.sess.resetStream(st.id, errorCode)
+      c.queueOutput()
+    except CatchableError: discard
+    st.closed = true
+    st.errorCode = errorCode
+    st.outEnded = true
+    st.notify()
+
+proc recvHeaders*(st: AsyncH2Stream): Future[seq[Header]] {.async.} =
+  ## Client: the response HEADERS.
+  while true:
+    if st.blocks.len > 0: return st.blocks[0]
+    st.checkGone()
+    await st.changed()
+
+proc recvTrailers*(st: AsyncH2Stream): Future[seq[Header]] {.async.} =
+  ## Client: waits until the response has ended; the trailing HEADERS block,
+  ## or empty for a trailers-only response.
+  while true:
+    if st.inEnded: return (if st.blocks.len > 1: st.blocks[^1] else: @[])
+    st.checkGone()
+    await st.changed()
+
+proc cancel*(st: AsyncH2Stream) =
+  ## Client: resets the stream with CANCEL.
+  st.reset(CANCEL)
+
+proc release*(st: AsyncH2Stream) =
+  ## Client: forgets the stream; one still open is cancelled first.
+  if st.released: return
+  st.released = true
+  let c = st.conn
+  if not st.closed and not (st.inEnded and st.outEnded) and not c.closed:
+    try:
+      c.sess.resetStream(st.id, CANCEL)
+      c.queueOutput()
+    except CatchableError: discard
+  st.closed = true
+  st.notify()
+  c.forget(st)
+
+# ------------------------------------------------------------ client
+
+proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = "";
+           keepalive = Keepalive()): Future[AsyncH2Conn] {.async.} =
+  ## Without `tls`: HTTP/2 with prior knowledge (h2c). With it: TLS 1.2,
+  ## ALPN h2, the server's certificate checked against `serverName` (default
+  ## `host`). A failed handshake shows up as an error on the first stream.
+  let addrs = resolveTAddress(host, port)
+  if addrs.len == 0: raise newException(TransportError, "cannot resolve " & host)
+  var transp: StreamTransport
+  var lastErr: ref CatchableError
+  for a in addrs:
+    try:
+      transp = await connect(a, flags = {SocketFlags.TcpNoDelay})
+      break
+    except CancelledError as e:
+      raise e
+    except CatchableError as e:
+      lastErr = e
+  if transp == nil: raise lastErr
+  let c = newConn(transp, newClientSession(), nil, keepalive)
+  if tls != nil:
+    c.tlsConf = tls
+    try:
+      c.tls = newClientTls(tls, if serverName.len > 0: serverName else: host)
+    except TlsError as e:
+      await transp.closeWait()
+      raise e
+  c.start()
+  c
+
+proc close*(c: AsyncH2Conn) {.async: (raises: []).} =
+  ## Sends GOAWAY and closes the connection; open streams fail.
+  await c.shutdown()
+
+proc isClosed*(c: AsyncH2Conn): bool = c.closed
+
+proc isUsable*(c: AsyncH2Conn): bool =
+  ## Open, and the server has not sent GOAWAY: new streams may be started.
+  not c.closed and not c.goawayReceived and c.sess.requestAllowed
+
+proc activeStreams*(c: AsyncH2Conn): int = c.streams.len
+
+proc failure*(c: AsyncH2Conn): string = c.failure
+
+proc openStream*(c: AsyncH2Conn; headers: seq[Header]; timeoutMs = -1): AsyncH2Stream =
+  ## Sends the request HEADERS; the body follows with `send`. With
+  ## `timeoutMs >= 0` the stream is reset with CANCEL when the time is up.
+  if c.closed:
+    raise newException(H2StreamClosed, "connection closed: " & c.failure)
+  if c.goawayReceived or not c.sess.requestAllowed:
+    raise newException(H2StreamClosed, "connection is going away (GOAWAY)")
+  let id = c.sess.submitRequest(headers)
+  result = AsyncH2Stream(conn: c, id: id)
+  c.streams[id] = result
+  result.armDeadline(timeoutMs)
+  c.queueOutput()
+
+proc closeSend*(st: AsyncH2Stream): Future[void] =
+  ## Ends the request body (half-close).
+  st.send(@[], endStream = true)
+
+# ------------------------------------------------------------ server
+
+proc finishHandler(c: AsyncH2Conn; st: AsyncH2Stream) =
+  if not st.outEnded and not st.closed and not c.closed:
+    try:
+      c.sess.resetStream(st.id, INTERNAL_ERROR)
+      c.queueOutput()
+    except CatchableError: discard
+  st.closed = true
+  st.notify()
+  c.forget(st)
+  if c.server != nil and c.server.stopping: c.closedEv.fire()   # wakes `stop`
+
+proc runHandler(c: AsyncH2Conn; st: AsyncH2Stream) {.async: (raises: []).} =
+  try:
+    await c.server.handler(st, c.server.userData)
+  except CancelledError:
+    discard
+  except CatchableError:
+    discard
+  c.finishHandler(st)
+
+proc newAsyncStreamServer*(handler: AsyncStreamHandler; userData: pointer = nil;
+                           port = Port(0); address = "127.0.0.1";
+                           tls: TlsConfig = nil; keepalive = Keepalive();
+                           pingPolicy = PingPolicy()): AsyncH2Server =
+  ## Listens right away; connections are served by the running event loop.
+  let s = AsyncH2Server(handler: handler, userData: userData, tls: tls,
+                        ka: keepalive, policy: pingPolicy)
+  proc accept(server: StreamServer; transp: StreamTransport) {.async: (raises: []).} =
+    if s.stopping:
+      await transp.closeWait()
+      return
+    # Drop connections that are done.
+    var keep: seq[AsyncH2Conn]
+    for c in s.conns:
+      if not (c.closed and c.streams.len == 0 and c.writerF.finished): keep.add c
+    s.conns = keep
+    var c: AsyncH2Conn
+    try:
+      c = newConn(transp, newServerSession(), s, s.ka)
+      c.policy = s.policy
+      if s.tls != nil: c.tls = newServerTls(s.tls)
+    except CatchableError:
+      await transp.closeWait()
+      return
+    s.conns.add c
+    try: c.start()
+    except CatchableError as e: c.fail(e.msg)
+  s.srv = createStreamServer(initTAddress(address, port), accept,
+                             {ServerFlags.ReuseAddr, ServerFlags.TcpNoDelay})
+  s.srv.start()
+  s
+
+proc port*(s: AsyncH2Server): Port = s.srv.localAddress().port
+
+proc stop*(s: AsyncH2Server; graceMs = 0) {.async: (raises: []).} =
+  ## Stops accepting and closes every connection. With `graceMs` > 0 clients
+  ## get GOAWAY first and calls in progress may finish for up to that long;
+  ## the handlers still running after that are cancelled. Stopping twice is
+  ## harmless.
+  if s.stopping: return
+  s.stopping = true
+  try: s.srv.stop()
+  except CatchableError: discard
+  await s.srv.closeWait()
+  if graceMs > 0:
+    var busy = false
+    for c in s.conns:
+      if not c.closed:
+        try:
+          c.sess.shutdownNotice()
+          c.queueOutput()
+        except CatchableError: discard
+        busy = busy or c.streams.len > 0
+    try:
+      if busy: await sleepAsync(min(100, graceMs).milliseconds)
+    except CancelledError: discard
+    for c in s.conns:
+      if not c.closed:
+        try:
+          c.sess.goAway()
+          c.queueOutput()
+        except CatchableError: discard
+    let deadline = Moment.now() + graceMs.milliseconds
+    for c in s.conns:
+      while not c.closed and c.streams.len > 0 and Moment.now() < deadline:
+        c.closedEv.clear()
+        try: discard await withTimeout(c.closedEv.wait(), deadline - Moment.now())
+        except CancelledError: break
+  for c in s.conns:
+    var running: seq[Task]
+    for st in c.streams.values:
+      if st.handler != nil and not st.handler.finished: running.add st.handler
+    await c.shutdown()            # streams close; handlers get cancelled
+    for f in running: await noCancel f
+  s.conns = @[]
