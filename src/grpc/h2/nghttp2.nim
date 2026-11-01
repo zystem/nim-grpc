@@ -15,6 +15,7 @@ const h = "nghttp2/nghttp2.h"
 
 type
   Nghttp2Session* {.importc: "nghttp2_session", header: h, incompleteStruct.} = object
+  Nghttp2Option* {.importc: "nghttp2_option", header: h, incompleteStruct.} = object
   Nghttp2SessionCallbacks* {.importc: "nghttp2_session_callbacks", header: h,
                              incompleteStruct.} = object
   Nghttp2Ssize* = int  ## ptrdiff_t
@@ -86,6 +87,7 @@ const
   NGHTTP2_DATA_FLAG_EOF* = 0x01'u32
   NGHTTP2_DATA_FLAG_NO_END_STREAM* = 0x02'u32
 
+  NGHTTP2_ERR_INVALID_ARGUMENT* = -501
   NGHTTP2_ERR_DEFERRED* = -508
   NGHTTP2_ERR_CALLBACK_FAILURE* = -902
 
@@ -113,6 +115,17 @@ proc nghttp2_session_client_new*(session: ptr ptr Nghttp2Session;
   cbs: ptr Nghttp2SessionCallbacks; userData: pointer): cint
 proc nghttp2_session_server_new*(session: ptr ptr Nghttp2Session;
   cbs: ptr Nghttp2SessionCallbacks; userData: pointer): cint
+proc nghttp2_option_new*(opt: ptr ptr Nghttp2Option): cint
+proc nghttp2_option_del*(opt: ptr Nghttp2Option)
+proc nghttp2_option_set_no_auto_window_update*(opt: ptr Nghttp2Option; val: cint)
+proc nghttp2_session_client_new2*(session: ptr ptr Nghttp2Session;
+  cbs: ptr Nghttp2SessionCallbacks; userData: pointer; opt: ptr Nghttp2Option): cint
+proc nghttp2_session_server_new2*(session: ptr ptr Nghttp2Session;
+  cbs: ptr Nghttp2SessionCallbacks; userData: pointer; opt: ptr Nghttp2Option): cint
+proc nghttp2_session_consume*(session: ptr Nghttp2Session; streamId: int32;
+  size: csize_t): cint
+proc nghttp2_session_consume_connection*(session: ptr Nghttp2Session;
+  size: csize_t): cint
 proc nghttp2_session_del*(session: ptr Nghttp2Session)
 
 proc nghttp2_session_mem_recv2*(session: ptr Nghttp2Session; data: ptr uint8;

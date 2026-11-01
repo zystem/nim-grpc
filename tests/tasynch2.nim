@@ -34,6 +34,9 @@ template run(f: untyped) =
   waitFor f
   check failures == newSeq[string]()
 
+var slowFirst = 0    ## bytes waiting when the /slow handler first reads
+var slowTaken = 0    ## bytes the /slow handler has read
+
 proc echoHandler(st: AsyncH2Stream; ud: pointer): Future[void] {.async.} =
   ## Streams the body back upper-cased as it arrives, path in a trailer.
   let path = st.headers.header(":path")
@@ -44,6 +47,15 @@ proc echoHandler(st: AsyncH2Stream; ud: pointer): Future[void] {.async.} =
       inc handlerCancelled
       raise e
   st.sendHeaders(@[(":status", "200"), ("content-type", "application/grpc")])
+  if path == "/slow":
+    await sleepAsync(400.milliseconds)   # reads nothing: the window must fill
+    while true:
+      let chunk = await st.recvData()
+      if chunk.len == 0: break
+      if slowTaken == 0: slowFirst = chunk.len
+      slowTaken += chunk.len
+    st.sendTrailers(@[("grpc-status", "0")])
+    return
   while true:
     var chunk = await st.recvData()
     if chunk.len == 0: break
@@ -59,14 +71,17 @@ type Reply = object
 proc request(c: AsyncH2Conn; port: Port; path: string; body: seq[byte];
              timeoutMs = -1): Future[Reply] {.async.} =
   let st = c.openStream(reqHeaders(port, path), timeoutMs)
+  # Sending and reading overlap: an echo peer stops reading while its own
+  # replies are held back by our window, so send-then-read would deadlock.
+  let sending = st.send(body, endStream = true)
   try:
-    await st.send(body, endStream = true)
     result.headers = await st.recvHeaders()
     while true:
       let chunk = await st.recvData()
       if chunk.len == 0: break
       result.body.add chunk
     result.trailers = await st.recvTrailers()
+    await sending
   except CatchableError as e:
     st.release()
     raise e
@@ -96,6 +111,28 @@ suite "chronos h2":
       let r = await c.request(srv.port, "/big", 'q'.repeat(3_000_000).toBytes)
       ck r.body.len == 3_000_000
       ck r.body.toStr == 'Q'.repeat(3_000_000)
+      await c.close()
+    run go(srv)
+
+  test "a reader that does not read stops the sender":
+    proc go(srv: AsyncH2Server) {.async.} =
+      slowFirst = 0
+      slowTaken = 0
+      let c = await dial("127.0.0.1", srv.port)
+      let st = c.openStream(reqHeaders(srv.port, "/slow"))
+      let chunk = 'z'.repeat(16_384).toBytes
+      var sender = proc (): Future[void] {.async.} =
+        for i in 0 ..< 128:             # 2 MiB in all
+          await st.send(chunk)
+        await st.closeSend()
+      let f = sender()
+      discard await st.recvHeaders()
+      discard await st.recvTrailers()
+      await f
+      # While the handler slept the sender was held to the initial window.
+      ck slowFirst > 0 and slowFirst <= 65_535
+      ck slowTaken == 2_097_152
+      st.release()
       await c.close()
     run go(srv)
 

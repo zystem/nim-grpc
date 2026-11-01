@@ -221,7 +221,8 @@ nimble tsan   # the same under ThreadSanitizer
 5. TLS with ALPN `h2`, mTLS — done
 6. chronos adapter — done
 7. Code generation from `.proto` — done
-8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
+8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`) — done
+   (chronos adapter: the peer's window reopens as handlers read)
 9. Keepalive, GOAWAY handling, graceful shutdown, reconnect — done
 10. Well-known types — done
 

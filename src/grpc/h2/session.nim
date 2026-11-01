@@ -194,7 +194,7 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
 
 # ---------------------------------------------------------------- public API
 
-proc newSession(server: bool): H2Session =
+proc newSession(server, manualFlow: bool): H2Session =
   result = H2Session()
   var cbs: ptr Nghttp2SessionCallbacks
   if nghttp2_session_callbacks_new(cbs.addr) != 0:
@@ -205,16 +205,38 @@ proc newSession(server: bool): H2Session =
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, onDataChunk)
   nghttp2_session_callbacks_set_on_stream_close_callback(cbs, onStreamClose)
   let ud = cast[pointer](result[].addr)
+  var opt: ptr Nghttp2Option
+  if manualFlow:
+    if nghttp2_option_new(opt.addr) != 0:
+      nghttp2_session_callbacks_del(cbs)
+      raise newException(H2Error, "nghttp2_option_new failed")
+    nghttp2_option_set_no_auto_window_update(opt, 1)
   let rv =
-    if server: nghttp2_session_server_new(result.raw.addr, cbs, ud)
-    else: nghttp2_session_client_new(result.raw.addr, cbs, ud)
+    if server: nghttp2_session_server_new2(result.raw.addr, cbs, ud, opt)
+    else: nghttp2_session_client_new2(result.raw.addr, cbs, ud, opt)
   nghttp2_session_callbacks_del(cbs)
+  if opt != nil: nghttp2_option_del(opt)
   if rv != 0: raiseH2(rv, "session_new")
   let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, nil, 0)
   if rs != 0: raiseH2(rs, "submit_settings")
 
-proc newClientSession*(): H2Session = newSession(false)
-proc newServerSession*(): H2Session = newSession(true)
+proc newClientSession*(manualFlow = false): H2Session = newSession(false, manualFlow)
+proc newServerSession*(manualFlow = false): H2Session = newSession(true, manualFlow)
+  ## With `manualFlow` nghttp2 sends no WINDOW_UPDATE by itself: the peer's
+  ## window only reopens as the application calls `consume`, so a slow reader
+  ## backpressures the sender instead of buffering without bound.
+
+proc consume*(s: H2Session; streamId: int32; n: int) =
+  ## Reports `n` received DATA bytes as processed (manual flow control only).
+  ## Pass `streamId` 0 for bytes of a stream that is gone: only the
+  ## connection window is credited.
+  if n <= 0: return
+  let rc = nghttp2_session_consume_connection(s.raw, n.csize_t)
+  if rc != 0: raiseH2(rc, "consume_connection")
+  if streamId != 0:
+    let rs = nghttp2_session_consume(s.raw, streamId, n.csize_t)
+    # The stream may have closed since the data arrived; that is not an error.
+    if rs != 0 and rs != NGHTTP2_ERR_INVALID_ARGUMENT: raiseH2(rs, "consume")
 
 proc recv*(s: H2Session; data: openArray[byte]) =
   ## Feeds bytes read from the transport. Raises H2Error on a fatal

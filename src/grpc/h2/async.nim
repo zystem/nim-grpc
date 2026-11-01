@@ -179,7 +179,18 @@ proc armDeadline(st: AsyncH2Stream; ms: int) =
   st.timer = setTimer(st.deadline, proc (arg: pointer) {.gcsafe, raises: [].} =
     st.onDeadline())
 
+proc credit(c: AsyncH2Conn; streamId: int32; n: int) =
+  ## Gives `n` processed (or discarded) body bytes back to the peer's window.
+  if n <= 0 or c.closed: return
+  try:
+    c.sess.consume(streamId, n)
+    c.queueOutput()
+  except CatchableError: discard
+
 proc forget(c: AsyncH2Conn; st: AsyncH2Stream) =
+  if st.inbuf.len > 0:
+    c.credit(0, st.inbuf.len)    # unread bytes must not hold the connection window
+    st.inbuf = @[]
   if st.timer != nil:
     clearTimer(st.timer)
     st.timer = nil
@@ -204,10 +215,12 @@ proc handleEvents(c: AsyncH2Conn) =
         c.lastDispatched = ev.streamId
         ns.handler = c.runHandler(ns)
     of evData:
-      if st != nil:
+      if st != nil and not st.released:
         st.inbuf.add ev.data
         if ev.dataEndStream: st.inEnded = true
         st.notify()
+      else:
+        c.credit(0, ev.data.len)
     of evStreamClosed:
       if st != nil:
         st.closed = true
@@ -463,6 +476,7 @@ proc recvData*(st: AsyncH2Stream): Future[seq[byte]] {.async.} =
     if st.inbuf.len > 0:
       result = move st.inbuf
       st.inbuf = @[]
+      st.conn.credit(st.id, result.len)
       return
     if st.inEnded: return
     st.checkGone()
@@ -555,7 +569,7 @@ proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = "";
     except CatchableError as e:
       lastErr = e
   if transp == nil: raise lastErr
-  let c = newConn(transp, newClientSession(), nil, keepalive)
+  let c = newConn(transp, newClientSession(manualFlow = true), nil, keepalive)
   if tls != nil:
     c.tlsConf = tls
     try:
@@ -637,7 +651,7 @@ proc newAsyncStreamServer*(handler: AsyncStreamHandler; userData: pointer = nil;
     s.conns = keep
     var c: AsyncH2Conn
     try:
-      c = newConn(transp, newServerSession(), s, s.ka)
+      c = newConn(transp, newServerSession(manualFlow = true), s, s.ka)
       c.policy = s.policy
       if s.tls != nil: c.tls = newServerTls(s.tls)
     except CatchableError:
