@@ -1,0 +1,9 @@
+# Everything is scanned as by default; the certificates under tests/certs are throw-away keys made for the TLS tests and used nowhere else.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "throw-away keys of the TLS tests"
+paths = [
+  '''tests/certs/.*''',
+]

@@ -199,11 +199,11 @@ proc newSession(server, manualFlow: bool): H2Session =
   var cbs: ptr Nghttp2SessionCallbacks
   if nghttp2_session_callbacks_new(cbs.addr) != 0:
     raise newException(H2Error, "nghttp2_session_callbacks_new failed")
-  nghttp2_session_callbacks_set_on_begin_headers_callback(cbs, onBeginHeaders)
-  nghttp2_session_callbacks_set_on_header_callback(cbs, onHeader)
-  nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, onFrameRecv)
-  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, onDataChunk)
-  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, onStreamClose)
+  nghttp2_session_callbacks_set_on_begin_headers_callback(cbs, cast[pointer](onBeginHeaders))
+  nghttp2_session_callbacks_set_on_header_callback(cbs, cast[pointer](onHeader))
+  nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, cast[pointer](onFrameRecv))
+  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, cast[pointer](onDataChunk))
+  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, cast[pointer](onStreamClose))
   let ud = cast[pointer](result[].addr)
   var opt: ptr Nghttp2Option
   if manualFlow:

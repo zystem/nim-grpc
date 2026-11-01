@@ -97,19 +97,22 @@ const
   NGHTTP2_CANCEL* = 8'u32
   NGHTTP2_ENHANCE_YOUR_CALM* = 11'u32
 
+# Callbacks and out-pointers are passed as `pointer`: the C prototypes take
+# `const` parameters, which Nim cannot spell, and GCC 14 rejects the mismatch
+# of function pointer types (-Wincompatible-pointer-types is an error there).
 {.push importc, header: h, cdecl.}
 proc nghttp2_session_callbacks_new*(cbs: ptr ptr Nghttp2SessionCallbacks): cint
 proc nghttp2_session_callbacks_del*(cbs: ptr Nghttp2SessionCallbacks)
 proc nghttp2_session_callbacks_set_on_begin_headers_callback*(
-  cbs: ptr Nghttp2SessionCallbacks; cb: OnBeginHeadersCb)
+  cbs: ptr Nghttp2SessionCallbacks; cb: pointer)
 proc nghttp2_session_callbacks_set_on_header_callback*(
-  cbs: ptr Nghttp2SessionCallbacks; cb: OnHeaderCb)
+  cbs: ptr Nghttp2SessionCallbacks; cb: pointer)
 proc nghttp2_session_callbacks_set_on_frame_recv_callback*(
-  cbs: ptr Nghttp2SessionCallbacks; cb: OnFrameRecvCb)
+  cbs: ptr Nghttp2SessionCallbacks; cb: pointer)
 proc nghttp2_session_callbacks_set_on_data_chunk_recv_callback*(
-  cbs: ptr Nghttp2SessionCallbacks; cb: OnDataChunkRecvCb)
+  cbs: ptr Nghttp2SessionCallbacks; cb: pointer)
 proc nghttp2_session_callbacks_set_on_stream_close_callback*(
-  cbs: ptr Nghttp2SessionCallbacks; cb: OnStreamCloseCb)
+  cbs: ptr Nghttp2SessionCallbacks; cb: pointer)
 
 proc nghttp2_session_client_new*(session: ptr ptr Nghttp2Session;
   cbs: ptr Nghttp2SessionCallbacks; userData: pointer): cint
@@ -131,7 +134,7 @@ proc nghttp2_session_del*(session: ptr Nghttp2Session)
 proc nghttp2_session_mem_recv2*(session: ptr Nghttp2Session; data: ptr uint8;
   len: csize_t): Nghttp2Ssize
 proc nghttp2_session_mem_send2*(session: ptr Nghttp2Session;
-  data: ptr ptr uint8): Nghttp2Ssize
+  data: pointer): Nghttp2Ssize
 proc nghttp2_session_want_read*(session: ptr Nghttp2Session): cint
 proc nghttp2_session_want_write*(session: ptr Nghttp2Session): cint
 proc nghttp2_session_resume_data*(session: ptr Nghttp2Session; streamId: int32): cint

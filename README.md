@@ -226,6 +226,13 @@ nimble tsan   # the same under ThreadSanitizer
 9. Keepalive, GOAWAY handling, graceful shutdown, reconnect — done
 10. Well-known types — done
 
+## Project
+
+[Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) (commits are signed off, [DCO](DCO.md)) · [Governance](GOVERNANCE.md) ·
+[Code of conduct](CODE_OF_CONDUCT.md) · [Changelog](CHANGELOG.md) · [Threat model](docs/threat-model.md) ·
+[Architecture](docs/architecture.md) · [Assurance case](docs/assurance-case.md) · [Building](docs/building.md) ·
+[Roadmap](docs/roadmap.md) · [Upgrading](docs/upgrading.md). Licence: [MIT](LICENSE).
+
 ## Nim compiler
 
 Nim 2.2.12 and 2.2.14 can lose an exception passing through `finally` or
