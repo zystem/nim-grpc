@@ -339,8 +339,25 @@ typedef struct {
 
 static const char *h2_name = "h2";
 
+/* Only forward-secret key agreement with an AEAD cipher. BearSSL's "full"
+ * profiles also offer static RSA, CBC and 3DES suites; those are dropped. */
+static const uint16_t suites[] = {
+    BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+};
+
 static void setup_common(gtls_conn *t, gtls_conf *c) {
     br_x509_minimal_init_full(&t->x509, c->tas, c->ta_num);
+    /* Certificates: RSA keys of 2048 bits or more (the default admits 1017),
+     * and no MD5 or SHA-1 signatures. */
+    br_x509_minimal_set_minrsa(&t->x509, 256);
+    br_x509_minimal_set_hash(&t->x509, br_md5_ID, NULL);
+    br_x509_minimal_set_hash(&t->x509, br_sha1_ID, NULL);
+    br_ssl_engine_set_suites(t->eng, suites, sizeof suites / sizeof suites[0]);
     t->watch.vtable = &x509_watch_vtable;
     t->watch.inner = &t->x509.vtable;
     br_ssl_engine_set_x509(t->eng, &t->watch.vtable);
