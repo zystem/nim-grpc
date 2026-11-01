@@ -5,7 +5,7 @@
 ## protoc is available (PROTOC, default `protoc` on PATH) the re-encoded bytes
 ## must also decode, in protoc, to the same text as the original.
 
-import std/[unittest, os, osproc, strutils, options, tables, math]
+import std/[unittest, os, osproc, options, tables, math]
 import grpc/protobuf
 import ./gen/[codec_pb, legacy_pb]
 
