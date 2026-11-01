@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Security
+- TLS is narrowed to what is safe: only ECDHE key agreement with AES-GCM or ChaCha20-Poly1305 (BearSSL's "full" profile also offered static RSA, CBC and 3DES), RSA certificate keys of 2048 bits or more (the default admitted 1017), and no MD5 or SHA-1 certificate signatures. A peer that supports nothing better cannot connect any more; see [docs/upgrading.md](docs/upgrading.md).
+
 ### Added
 - Manual HTTP/2 flow control on the chronos adapter: the peer's window reopens only as handlers read, so a slow reader backpressures the sender instead of buffering without bound.
 - Project documents for the OpenSSF Best Practices levels: [security policy](SECURITY.md), [governance](GOVERNANCE.md), [contributing](CONTRIBUTING.md), [code of conduct](CODE_OF_CONDUCT.md), DCO sign-off with a check of pull requests, [threat model](docs/threat-model.md), [architecture](docs/architecture.md), [assurance case](docs/assurance-case.md), [security requirements](docs/security-requirements.md), [security policies](docs/security-policies.md), [building](docs/building.md), [roadmap](docs/roadmap.md), [upgrading](docs/upgrading.md).
