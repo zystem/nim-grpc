@@ -1,5 +1,7 @@
 # nim-grpc
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16176/badge)](https://www.bestpractices.dev/projects/16176)
+
 gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 
 **Status:** early. Unary and streaming calls (client-, server- and
