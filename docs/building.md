@@ -21,7 +21,7 @@ A different prefix is passed with `-d:nghttp2Prefix=/path`. The README has the v
 
 ## Tests
 
-`nimble test` runs every test file (`grpc.nimble` lists them); `nimble asan` and `nimble tsan` run the same under the sanitizers. Interop with grpc-go ([interop.md](interop.md)) and h2spec ([h2spec.md](h2spec.md)) need Go and the h2spec binary and are run by hand. What runs when: [CONTRIBUTING.md](../CONTRIBUTING.md).
+`nimble test` runs every test file (`grpc.nimble` lists them); `nimble asan` and `nimble tsan` run the same under the sanitizers. ThreadSanitizer needs a smaller address-space randomisation on recent Linux kernels (it stops with "unexpected memory mapping"): `sudo sysctl vm.mmap_rnd_bits=28`, or run a test binary as `setarch $(uname -m) -R ./binary`. `tools/fuzz.sh` builds and runs the mutation fuzzer under AddressSanitizer, `tools/soak.sh` the soak test and `tools/profile.sh` the heap profile (which needs `heaptrack`). Interop with grpc-go ([interop.md](interop.md)) and h2spec ([h2spec.md](h2spec.md)) need Go and the h2spec binary and are run by hand. What runs when: [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## How dependencies are chosen, obtained and tracked
 

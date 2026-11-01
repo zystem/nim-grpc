@@ -1,0 +1,45 @@
+name: ThreadSanitizer
+
+# The whole test suite under ThreadSanitizer, every night (it is too slow to gate every pull request).
+# A report opens an issue; it does not block merges.
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Allow ThreadSanitizer's memory layout (newer kernels randomise too much)
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: nimble tsan
+        id: tsan
+        run: nimble tsan 2>&1 | tee tsan.txt; exit "${PIPESTATUS[0]}"
+      - name: Keep the log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tsan-log
+          path: tsan.txt
+          retention-days: 30
+      - name: Open an issue on a report
+        if: failure() && steps.tsan.outcome == 'failure' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="The nightly ThreadSanitizer run failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"$'\n\n```\n'"$(grep -a -m1 -B2 -A25 'WARNING: ThreadSanitizer' tsan.txt | head -40 || tail -n 20 tsan.txt)"$'\n```'
+          gh issue create --title "ThreadSanitizer report" --body "$body"

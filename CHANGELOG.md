@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Scheduled long checks: a weekly mutation fuzzer over the parsers (`tools/fuzz.nim`, `fuzz.yml`), a nightly ThreadSanitizer run of the whole suite (`tsan.yml`) and a weekly heap profile of the server with its summary (`tools/profile.sh`, `profile.yml`). A shared setup action (`.github/actions/setup`) builds nghttp2 and Nim for them.
 - Weekly soak test of the chronos server (`tools/soak.sh`, `.github/workflows/soak.yml`): memory per connection and no growth under churn, plain and TLS. `tools/asyncload.nim` gained `hold`, `churn` and `tls` modes.
 
 ## 0.0.1 — 2026-11-02

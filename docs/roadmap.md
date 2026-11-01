@@ -4,13 +4,14 @@ What the project intends to do and not do in the next year. It is a plan of one 
 
 ## Intends to do
 
-1. **Fuzzing** of the parsers that face the network: the Protobuf decoder, gRPC framing, gzip, the HTTP/2 glue. Run them in CI under the sanitizers.
-2. **Limits**: a cap on concurrent streams per connection and a total buffer budget per connection, settable by the program.
-3. **Interop breadth**: more cases against grpc-go and one more implementation (grpc-java or the C++ core); the remaining h2spec cases that can be met.
-4. **Releases**: tag releases with notes, keep the changelog, publish to the nimble directory.
-5. **Quality**: a regression test for every fixed bug; measure coverage if a tool for Nim becomes usable.
-6. **A second maintainer and a second reviewer** (see [GOVERNANCE.md](../GOVERNANCE.md)).
-7. **Badges**: the OpenSSF Best Practices badge at "passing", then as far as the project can honestly meet it.
+1. **Coverage-guided fuzzing** (libFuzzer or ClusterFuzzLite) of the parsers that face the network. A mutation fuzzer (`tools/fuzz.nim`) over the Protobuf decoder, gRPC framing, gzip and the HTTP/2 session already runs weekly under AddressSanitizer.
+2. **Memory per connection**: the heap profile (`tools/profile.sh`) shows 16 KiB of nghttp2 frame buffer and, with TLS, 40 KiB of BearSSL engine per connection; shrink them.
+3. **Limits**: a cap on concurrent streams per connection and a total buffer budget per connection, settable by the program.
+4. **Interop breadth**: more cases against grpc-go and one more implementation (grpc-java or the C++ core); the remaining h2spec cases that can be met.
+5. **Releases**: tag releases with notes, keep the changelog, publish to the nimble directory.
+6. **Quality**: a regression test for every fixed bug; measure coverage if a tool for Nim becomes usable.
+7. **A second maintainer and a second reviewer** (see [GOVERNANCE.md](../GOVERNANCE.md)).
+8. **Badges**: the OpenSSF Best Practices badge at "passing", then as far as the project can honestly meet it.
 
 ## Considers (no date)
 
