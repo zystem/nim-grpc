@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # nimble is not a Dependabot ecosystem; the dependencies (bearssl, chronos) are checked by hand, see docs/security-policies.md
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

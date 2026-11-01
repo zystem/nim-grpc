@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NGHTTP2_VERSION: 1.68.0
+
+jobs:
+  test:
+    name: tests (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, asan]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake zlib1g-dev xz-utils
+      - name: nghttp2 cache
+        id: ng
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /opt/nghttp2
+          key: nghttp2-${{ env.NGHTTP2_VERSION }}-${{ runner.os }}
+      - name: Build nghttp2 (static, as docs/building.md)
+        if: steps.ng.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSLO "https://github.com/nghttp2/nghttp2/releases/download/v${NGHTTP2_VERSION}/nghttp2-${NGHTTP2_VERSION}.tar.xz"
+          tar xf "nghttp2-${NGHTTP2_VERSION}.tar.xz"
+          cd "nghttp2-${NGHTTP2_VERSION}"
+          cmake -S . -B build -DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX=/opt/nghttp2
+          cmake --build build -j
+          sudo cmake --install build
+      - uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        with:
+          nim-version: 2.2.12
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: nimble install -y --depsOnly
+      - name: Run all test files
+        run: |
+          if [ "${{ matrix.mode }}" = asan ]; then nimble asan; else nimble test; fi

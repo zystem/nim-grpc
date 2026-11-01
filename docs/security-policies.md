@@ -1,0 +1,36 @@
+# Security policies of the project
+
+The rules the project holds itself to; the automatic parts are in [`.github/workflows/`](../.github/workflows/).
+
+## Findings in dependencies and licenses (software composition analysis)
+
+The library depends on `bearssl` and `chronos` (nimble, and their dependencies), and links nghttp2 and zlib (C). Tools: Dependabot for the GitHub Actions of the CI, Dependency Review on every pull request (it fails on a vulnerability of High or Critical severity and on a license outside an allowed list), and a review of the security announcements of nghttp2, BearSSL and zlib when a release is made (their advisories are public: nghttp2.org, bearssl.org, zlib.net). Nimble has no lock file here and no automatic scanner, so this part is manual and is a known gap.
+
+Threshold for remediation of a finding about a vulnerability:
+
+| Severity (CVSS) | A fix exists | No fix exists |
+|---|---|---|
+| Critical, High | fixed before the next release, and at once if the vulnerable code is reachable (nghttp2 is rebuilt at the fixed version and `NGHTTP2_VERSION` in CI and in [building.md](building.md) is raised) | the finding is recorded with the reason it is not exploitable; a mitigation is applied if it is reachable |
+| Medium | within 30 days | recorded |
+| Low | at the next routine update | none |
+
+Licenses: dependencies must be under permissive licenses (MIT, BSD, Apache-2.0, ISC, MPL-2.0); Dependency Review accepts only an allowed list of such licenses and refuses the rest, in particular copyleft (GPL, AGPL).
+
+**Before a release**: CI of the tagged commit must be green (all tests plainly and under AddressSanitizer), and the advisories of nghttp2, BearSSL and zlib are read. A release is not made while a Critical or High finding with a fix is open. A finding that is accepted instead of fixed is written into [CHANGELOG.md](../CHANGELOG.md) with the reason.
+
+## Findings of dynamic analysis
+
+Tools: AddressSanitizer and LeakSanitizer on every push and pull request (`nimble asan`), ThreadSanitizer by hand before a release (`nimble tsan`), the Nim compiler's own warnings. CodeQL does not support Nim, and the project knows of no static analyser for Nim beyond the compiler.
+
+Threshold: a sanitizer report of any severity is fixed before the change is merged; a test that exposes it is added. CI fails on a report.
+
+## Secrets and credentials
+
+- No secret is in the repository (`.gitleaks.toml`, GitHub secret scanning and push protection). The keys under `tests/certs/` are throw-away keys for the TLS tests ([tests/certs/README.md](../tests/certs/README.md)).
+- The library reads no secrets from the environment, files or the command line: the program passes TLS keys as arguments, and it is the program's job to store them.
+- The CI uses no long-lived secret: it uses the short-lived `GITHUB_TOKEN` of the run only.
+- A secret that leaked into the repository is treated as compromised: replaced first, then removed.
+
+## Support of releases
+
+See "What is supported" in [../SECURITY.md](../SECURITY.md).
