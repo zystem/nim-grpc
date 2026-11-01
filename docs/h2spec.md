@@ -25,5 +25,15 @@ Each one still has to be confirmed separately.
 | 6.3 | PRIORITY on stream 0 | timeout | PRIORITY frames are ignored (see 5.3.1). |
 | 6.9.1 | window above 2^31-1 on a stream | GOAWAY (FLOW_CONTROL_ERROR) | nghttp2 treats this as a connection error, not a stream error. The connection still gets FLOW_CONTROL_ERROR. |
 
+## chronos adapter
+
+The same run against `tools/h2specasync` (2026-11-01): **146 tests, 134
+passed, 2 skipped, 10 failed.** The nine failures above, plus one timing
+artefact:
+
+| Section | Test | Got | Why |
+|:---|:---|:---|:---|
+| 5.1 | half closed (remote): HEADERS (6) | DATA | The test server replies as soon as the request ends, before the stray HEADERS arrives, and h2spec looks only at the first frame. The blocking server passes because its worker thread replies a moment later. |
+
 Still to do: rerun with a server that delays its replies, so the timing
 artefact in 5.1.1 drops out.

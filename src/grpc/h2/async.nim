@@ -251,37 +251,47 @@ proc pumpTlsIn(c: AsyncH2Conn) =
   if app.len > 0: c.sess.recv(app)
   if c.tls.isClosed: raise newException(TlsError, c.tls.errorMessage)
 
+proc onBytes(c: AsyncH2Conn; data: openArray[byte]) =
+  ## Bytes from the socket: through TLS into the session, then events out.
+  c.lastRead = Moment.now()
+  try:
+    if c.tls == nil:
+      c.sess.recv(data)
+    else:
+      c.tlsIn.add data
+      c.pumpTlsIn()
+    c.handleEvents()
+    c.queueOutput()
+    if not c.sess.wantRead() and not c.sess.wantWrite() and c.outQ.len == 0:
+      c.fail("session finished")
+  except CatchableError as e:
+    # A connection error: nghttp2 has queued a GOAWAY; send it, then stop.
+    try: c.queueOutput(force = true)
+    except CatchableError: discard
+    c.fail(e.msg)
+
 proc readerLoop(c: AsyncH2Conn) {.async: (raises: []).} =
-  var buf = newSeq[byte](readChunk)
+  ## Works on chronos' own read buffer (`readMessage`), so a connection costs
+  ## no read buffer of ours.
+  var eof = false
+  proc take(data: openArray[byte]): tuple[consumed: int, done: bool] {.gcsafe, raises: [].} =
+    if data.len == 0:
+      eof = true
+      return (0, true)
+    if not c.closed: c.onBytes(data)
+    (data.len, true)
   while not c.closed:
-    var n = 0
     try:
-      n = await c.transp.readOnce(buf[0].addr, buf.len)
+      await c.transp.readMessage(take)
     except CancelledError:
       c.fail("closed")
       break
     except CatchableError:
-      n = -1
-    if c.closed: break
-    if n <= 0:
-      c.fail(if n == 0: "connection closed by peer" else: "read error")
+      c.fail("read error")
       break
-    c.lastRead = Moment.now()
-    try:
-      if c.tls == nil:
-        c.sess.recv(buf.toOpenArray(0, n - 1))
-      else:
-        c.tlsIn.add buf.toOpenArray(0, n - 1)
-        c.pumpTlsIn()
-      c.handleEvents()
-      c.queueOutput()
-      if not c.sess.wantRead() and not c.sess.wantWrite() and c.outQ.len == 0:
-        c.fail("session finished")
-    except CatchableError as e:
-      # A connection error: nghttp2 has queued a GOAWAY; send it, then stop.
-      try: c.queueOutput(force = true)
-      except CatchableError: discard
-      c.fail(e.msg)
+    if eof:
+      c.fail("connection closed by peer")
+      break
 
 proc writerLoop(c: AsyncH2Conn) {.async: (raises: []).} =
   while true:

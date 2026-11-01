@@ -1,7 +1,7 @@
 ## The chronos HTTP/2 adapter: async client and server, and both mixed with
 ## the blocking adapter.
 
-import std/[unittest, strutils, typedthreads, os]
+import std/[unittest, strutils, typedthreads, atomics, os]
 import pkg/chronos
 import grpc/h2/async
 from grpc/h2/blocking as blk import nil
@@ -204,17 +204,19 @@ suite "chronos h2":
 
   test "blocking client against the chronos server":
     let port = srv.port
-    type Arg = tuple[port: Port; ok: ptr bool]
+    type Arg = tuple[port: Port; ok: ptr bool; done: ptr Atomic[bool]]
     proc client(a: Arg) {.thread.} =
       let c = blk.dial("127.0.0.1", a.port)
       let r = blk.request(c, reqHeaders(a.port, "/blk"), "hello".toBytes)
       a.ok[] = r.body.toStr == "HELLO" and r.trailers.header("x-path") == "/blk"
       blk.close(c)
+      a.done[].store(true)
     var ok = false
+    var done: Atomic[bool]
     var th: Thread[Arg]
-    createThread(th, client, (port, ok.addr))
+    createThread(th, client, (port, ok.addr, done.addr))
     # Serve on this thread's loop until the client is done.
-    while th.running:
+    while not done.load:
       waitFor sleepAsync(5.milliseconds)
     joinThread(th)
     check ok

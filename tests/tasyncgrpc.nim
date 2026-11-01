@@ -1,0 +1,241 @@
+## gRPC on chronos: async client and server, and both mixed with the
+## blocking API.
+
+import std/[unittest, strutils, typedthreads, atomics]
+import pkg/chronos
+import grpc/[asyncclient, asyncserver]
+from grpc/client as bc import nil
+
+proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
+proc toStr(b: seq[byte]): string =
+  result = newString(b.len)
+  if b.len > 0: copyMem(result[0].addr, b[0].unsafeAddr, b.len)
+
+# `check` cannot run inside async procs (its formatter raises Exception).
+var failures: seq[string]
+template ck(cond: untyped) =
+  if not cond:
+    {.cast(gcsafe).}:
+      failures.add astToStr(cond) & " (line " & $instantiationInfo().line & ")"
+template run(f: untyped) =
+  failures = @[]
+  waitFor f
+  check failures == newSeq[string]()
+
+template expectStatus(want: StatusCode; body: untyped) =
+  block:
+    var got = scOk
+    try:
+      body
+    except GrpcError as e:
+      got = e.code
+    ck got == want
+
+var cancelledHandlers = 0
+
+proc echoUnary(ctx: AsyncServerContext; req: seq[byte]): Future[seq[byte]] {.async.} =
+  let s = req.toStr
+  if s.startsWith("fail:"):
+    ctx.trailers.add ("x-why", "asked")
+    raise newGrpcError(scFailedPrecondition, s[5 .. ^1])
+  if s == "boom": raise newException(ValueError, "not a grpc error")
+  if s == "sleep":
+    try:
+      await sleepAsync(10.seconds)
+    except CancelledError as e:
+      inc cancelledHandlers
+      raise e
+  if s == "gzip": ctx.responseCompression = "gzip"
+  let md = ctx.metadata.get("x-echo")
+  if md.len > 0:
+    ctx.headers.add ("x-echo", md)
+    ctx.trailers.add ("x-echo-trailer", md)
+  return s.toUpperAscii.toBytes
+
+proc counter(ctx: AsyncServerContext; call: AsyncServerCall) {.async.} =
+  ## Bidi: replies to every message with its running index; then the total.
+  var n = 0
+  while true:
+    let m = await call.recv()
+    if m.isNone: break
+    inc n
+    await call.send(($n & ":" & m.get.toStr).toBytes)
+  await call.send(("total " & $n).toBytes)
+
+proc flood(ctx: AsyncServerContext; call: AsyncServerCall) {.async.} =
+  ## Server streaming: as many 1 KiB messages as the request says.
+  let m = await call.recv()
+  let n = parseInt(m.get.toStr)
+  for i in 0 ..< n:
+    await call.send(newSeq[byte](1024))
+
+proc newTestServer(): AsyncGrpcServer =
+  result = newAsyncGrpcServer()
+  result.addUnary("/t.S/Echo", echoUnary)
+  result.addStreaming("/t.S/Counter", counter)
+  result.addStreaming("/t.S/Flood", flood)
+  result.start()
+
+suite "async gRPC":
+  var srv: AsyncGrpcServer
+  setup:
+    srv = newTestServer()
+    cancelledHandlers = 0
+  teardown:
+    waitFor srv.stop()
+
+  test "unary, metadata both ways":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let r = await ch.unaryCall("/t.S/Echo", "hi".toBytes, @[("x-echo", "v")])
+      ck r.message.toStr == "HI"
+      ck r.headers.get("x-echo") == "v"
+      ck r.trailers.get("x-echo-trailer") == "v"
+      await ch.close()
+    run go(srv)
+
+  test "statuses: GrpcError, other errors, unknown method":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      var code = scOk
+      var trailers: Metadata
+      var msg = ""
+      try:
+        discard await ch.unaryCall("/t.S/Echo", "fail:nope".toBytes)
+      except GrpcError as e:
+        code = e.code
+        msg = e.msg
+        trailers = e.trailers
+      ck code == scFailedPrecondition
+      ck msg == "nope"
+      ck trailers.get("x-why") == "asked"
+      expectStatus(scUnknown):
+        discard await ch.unaryCall("/t.S/Echo", "boom".toBytes)
+      expectStatus(scUnimplemented):
+        discard await ch.unaryCall("/t.S/Nope", "x".toBytes)
+      await ch.close()
+    run go(srv)
+
+  test "deadline: client gets DEADLINE_EXCEEDED, handler is cancelled":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let t0 = Moment.now()
+      expectStatus(scDeadlineExceeded):
+        discard await ch.unaryCall("/t.S/Echo", "sleep".toBytes, timeoutMs = 200)
+      ck Moment.now() - t0 < 2.seconds
+      await sleepAsync(100.milliseconds)
+      ck cancelledHandlers == 1
+      await ch.close()
+    run go(srv)
+
+  test "client cancel: handler is cancelled":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Echo")
+      await call.send("sleep".toBytes)
+      await call.closeSend()
+      await sleepAsync(100.milliseconds)
+      call.cancel()
+      expectStatus(scCancelled):
+        discard await call.recv()
+      await sleepAsync(100.milliseconds)
+      ck cancelledHandlers == 1
+      await ch.close()
+    run go(srv)
+
+  test "bidirectional streaming":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Counter")
+      for w in ["a", "b", "c"]:
+        await call.send(w.toBytes)
+        ck (await call.recv()).get.toStr.endsWith(":" & w)
+      await call.closeSend()
+      ck (await call.recv()).get.toStr == "total 3"
+      ck (await call.recv()).isNone
+      call.close()
+      await ch.close()
+    run go(srv)
+
+  test "compression both ways":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Echo", compression = "gzip")
+      await call.send("gzip".toBytes)
+      await call.closeSend()
+      ck (await call.recv()).get.toStr == "GZIP"
+      ck call.lastCompressed
+      ck (await call.recv()).isNone
+      call.close()
+      await ch.close()
+    run go(srv)
+
+  test "20 MiB server stream to a slow reader":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Flood")
+      await call.send("20000".toBytes)       # 20 MiB
+      await call.closeSend()
+      var got = 0
+      while true:
+        let m = await call.recv()
+        if m.isNone: break
+        got += m.get.len
+        if got mod (1024 * 1024) == 0: await sleepAsync(1.milliseconds)
+      ck got == 20000 * 1024
+      call.close()
+      await ch.close()
+    run go(srv)
+
+  test "thousands of concurrent calls on one channel":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      var fs: seq[Future[UnaryResult]]
+      for i in 0 ..< 5000:
+        fs.add ch.unaryCall("/t.S/Echo", ("m" & $i).toBytes, timeoutMs = 30_000)
+      await allFutures(fs)
+      var ok = 0
+      for i, f in fs:
+        if f.completed and f.read.message.toStr == "M" & $i: inc ok
+      ck ok == 5000
+      await ch.close()
+    run go(srv)
+
+  test "a stopped server comes back; the channel redials":
+    proc go(srv: AsyncGrpcServer): Future[AsyncGrpcServer] {.async.} =
+      let port = srv.port
+      let ch = await dialAsync("127.0.0.1", port)
+      ck (await ch.unaryCall("/t.S/Echo", "a".toBytes)).message.toStr == "A"
+      await srv.stop(graceMs = 500)
+      await sleepAsync(100.milliseconds)
+      expectStatus(scUnavailable):
+        discard await ch.unaryCall("/t.S/Echo", "b".toBytes)
+      let again = newAsyncGrpcServer(port)
+      again.addUnary("/t.S/Echo", echoUnary)
+      again.start()
+      ck (await ch.unaryCall("/t.S/Echo", "c".toBytes)).message.toStr == "C"
+      await ch.close()
+      return again
+    failures = @[]
+    srv = waitFor go(srv)
+    check failures == newSeq[string]()
+
+  test "blocking client against the async server":
+    type Arg = tuple[port: int; ok: ptr bool; done: ptr Atomic[bool]]
+    proc client(a: Arg) {.thread.} =
+     {.cast(gcsafe).}:
+      try:
+        let ch = bc.dial("127.0.0.1", a.port)
+        let r = bc.unaryCall(ch, "/t.S/Echo", "blocking".toBytes)
+        a.ok[] = r.message.toStr == "BLOCKING"
+        bc.close(ch)
+      except CatchableError:
+        discard
+      a.done[].store(true)
+    var ok = false
+    var done: Atomic[bool]
+    var th: Thread[Arg]
+    createThread(th, client, (srv.port, ok.addr, done.addr))
+    while not done.load: waitFor sleepAsync(5.milliseconds)
+    joinThread(th)
+    check ok

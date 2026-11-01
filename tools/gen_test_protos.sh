@@ -9,7 +9,8 @@ nim c -d:release --hints:off -o:tools/protoc-gen-nim src/protoc_gen_nim.nim
 rm -rf tests/gen && mkdir -p tests/gen
 $PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=tests/gen -Itests/proto \
   codec.proto legacy.proto wkt_use.proto
-$PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=tests/gen -I"$GRPC_PROTO" \
+$PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=tests/gen --nim_opt=blocking,async \
+  -I"$GRPC_PROTO" \
   grpc/testing/empty.proto grpc/testing/messages.proto grpc/testing/test.proto
 (cd tests/proto &&
  $PROTOC --encode=codec.test.Everything -I. codec.proto < fixture.txtpb > everything.bin &&

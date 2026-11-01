@@ -24,12 +24,14 @@
 ## * oneof        -> its members as presence-tracked fields; decoding one clears
 ##                   the others
 ## * service      -> `<Service>Client` with a proc per method, and
-##                   `<Service>Handlers` + `register<Service>` for servers
+##                   `<Service>Handlers` + `register<Service>` for servers;
+##                   with `--nim_opt=async` (or `blocking,async`) the chronos
+##                   twins `<Service>AsyncClient` and `<Service>AsyncHandlers`
 ##
 ## Not supported: groups (skipped on decode), extensions, proto2 default
 ## values, preserving unknown fields.
 
-import std/[strutils, tables, sets, os, options, algorithm]
+import std/[strutils, tables, sets, os, options]
 import grpc/protobuf
 
 # ================================================================ descriptors
@@ -621,6 +623,7 @@ proc genMessage(g: var Gen; prefix: string; path: seq[string]; m: MessageDesc) =
     "  var r = initReader(data)\n  decodeFrom(result, r)"
 
 proc genService(g: var Gen; s: ServiceDesc): string =
+  ## The blocking client and server API of `s`.
   let pkg = g.file.package
   let fullName = (if pkg.len > 0: pkg & "." else: "") & s.name
   let sn = camel(s.name, upperFirst = true)
@@ -694,6 +697,83 @@ proc genService(g: var Gen; s: ServiceDesc): string =
           "](s, \"" & path & "\", h." & ident(m.name) & ")"
   o.join("\n")
 
+proc genAsyncService(g: var Gen; s: ServiceDesc): string =
+  ## The chronos client and server API of `s` (plugin option `async`).
+  let pkg = g.file.package
+  let fullName = (if pkg.len > 0: pkg & "." else: "") & s.name
+  let sn = camel(s.name, upperFirst = true)
+  var o: seq[string]
+  o.add "# ---------------------------------------------------------------- async service " & fullName
+  o.add ""
+  o.add "type"
+  o.add "  " & sn & "AsyncClient* = object"
+  o.add "    ## Typed chronos client for " & fullName & "."
+  o.add "    ch*: AsyncChannel"
+  o.add ""
+  o.add "  " & sn & "AsyncHandlers* = object"
+  o.add "    ## Async server implementation of " & fullName & "; methods left nil"
+  o.add "    ## answer UNIMPLEMENTED."
+  for m in s.methods:
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
+    let kind =
+      if m.clientStreaming and m.serverStreaming: "AsyncBidiFn"
+      elif m.clientStreaming: "AsyncClientStreamFn"
+      elif m.serverStreaming: "AsyncServerStreamFn"
+      else: "AsyncUnaryFn"
+    o.add "    " & ident(m.name) & "*: " & kind & "[" & req & ", " & resp & "]"
+  o.add ""
+  o.add "proc new" & sn & "AsyncClient*(ch: AsyncChannel): " & sn & "AsyncClient = " &
+        sn & "AsyncClient(ch: ch)"
+  o.add ""
+  for m in s.methods:
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
+    let path = "/" & fullName & "/" & m.name
+    let mn = ident(m.name)
+    let mnPlain = mn.strip(chars = {'`'})
+    let cl = sn & "AsyncClient"
+    if not m.clientStreaming and not m.serverStreaming:
+      o.add "proc " & mn & "*(c: " & cl & "; req: " & req &
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"): Future[" & resp & "] {.async.} ="
+      o.add "  return (await unaryCallTyped[" & req & ", " & resp & "](c.ch, \"" & path &
+            "\", req, metadata, timeoutMs, compression)).message"
+      o.add ""
+      o.add "proc " & mnPlain & "WithMetadata*(c: " & cl & "; req: " & req &
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"):"
+      o.add "    Future[tuple[message: " & resp & ", headers, trailers: Metadata]] ="
+      o.add "  unaryCallTyped[" & req & ", " & resp & "](c.ch, \"" & path &
+            "\", req, metadata, timeoutMs, compression)"
+    elif m.serverStreaming and not m.clientStreaming:
+      o.add "proc " & mn & "*(c: " & cl & "; req: " & req &
+            "; metadata: Metadata = @[]; timeoutMs = -1; compression = \"\"): Future[AsyncClientReader[" & resp & "]] ="
+      o.add "  openReader[" & req & ", " & resp & "](c.ch, \"" & path &
+            "\", req, metadata, timeoutMs, compression)"
+    elif m.clientStreaming and not m.serverStreaming:
+      o.add "proc " & mn & "*(c: " & cl & "; metadata: Metadata = @[]; timeoutMs = -1;"
+      o.add "    compression = \"\"): Future[AsyncClientWriter[" & req & ", " & resp & "]] ="
+      o.add "  openWriter[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs, compression)"
+    else:
+      o.add "proc " & mn & "*(c: " & cl & "; metadata: Metadata = @[]; timeoutMs = -1;"
+      o.add "    compression = \"\"): Future[AsyncClientBidi[" & req & ", " & resp & "]] ="
+      o.add "  openBidi[" & req & ", " & resp & "](c.ch, \"" & path & "\", metadata, timeoutMs, compression)"
+    o.add ""
+  o.add "proc register" & sn & "*(s: AsyncGrpcServer; h: " & sn & "AsyncHandlers) ="
+  o.add "  ## Adds the methods of " & fullName & " that `h` implements."
+  if s.methods.len == 0: o.add "  discard"
+  for m in s.methods:
+    let req = g.typeRef(m.input)
+    let resp = g.typeRef(m.output)
+    let path = "/" & fullName & "/" & m.name
+    let adder =
+      if m.clientStreaming and m.serverStreaming: "addTypedBidi"
+      elif m.clientStreaming: "addTypedClientStream"
+      elif m.serverStreaming: "addTypedServerStream"
+      else: "addTypedUnary"
+    o.add "  if h." & ident(m.name) & " != nil: " & adder & "[" & req & ", " & resp &
+          "](s, \"" & path & "\", h." & ident(m.name) & ")"
+  o.join("\n")
+
 const wktPrefix = "google/protobuf/"
 
 proc relImport(fromFile, toFile: string): string =
@@ -707,7 +787,23 @@ proc relImport(fromFile, toFile: string): string =
   if not rel.startsWith("."): rel = "./" & rel
   "\"" & rel & "\""
 
-proc generate(reg: Registry; f: var FileDesc): string =
+type GenOptions = object
+  blocking: bool   ## blocking client and server API (grpc/typed)
+  async: bool      ## chronos client and server API (grpc/asynctyped)
+
+proc parseOptions(param: string): GenOptions =
+  ## The plugin parameter (`--nim_opt=...`): a comma-separated list of
+  ## `blocking` and `async`; the default is `blocking`.
+  if param.strip.len == 0: return GenOptions(blocking: true)
+  for p in param.split(','):
+    case p.strip
+    of "blocking": result.blocking = true
+    of "async": result.async = true
+    of "": discard
+    else: raise newException(ValueError, "unknown option " & p.strip.escape &
+                             " (expected blocking and/or async)")
+
+proc generate(reg: Registry; f: var FileDesc; opts: GenOptions): string =
   var g = Gen(reg: reg, file: f.addr, proto3: f.syntax == "proto3")
   let prefix = if f.package.len > 0: "." & f.package else: ""
   for e in f.enums: g.genEnum(@[e.name], e)
@@ -718,7 +814,9 @@ proc generate(reg: Registry; f: var FileDesc): string =
   o.add "{.push warning[UnusedImport]: off.}"
   o.add "import std/[options, tables]"
   o.add "import grpc/protobuf"
-  if f.services.len > 0: o.add "import grpc/typed"
+  let services = f.services.len > 0
+  if services and opts.blocking: o.add "import grpc/typed"
+  if services and opts.async: o.add "import pkg/chronos, grpc/asynctyped"
   for dep in f.deps: o.add "import " & relImport(f.name, dep)
   # std/options and std/tables are not re-exported: a proto message named
   # `Option` (google.protobuf.Option) would then clash with them through
@@ -726,7 +824,8 @@ proc generate(reg: Registry; f: var FileDesc): string =
   o.add "export protobuf"
   for dep in f.deps:
     o.add "export " & moduleOf(dep).extractFilename
-  if f.services.len > 0: o.add "export typed"
+  if services and opts.blocking: o.add "export typed"
+  if services and opts.async: o.add "export chronos, asynctyped"
   o.add "{.pop.}"
   o.add ""
   if g.typesOut.len > 0:
@@ -739,8 +838,12 @@ proc generate(reg: Registry; f: var FileDesc): string =
   o.add g.procsOut.join("\n\n")
   o.add ""
   for s in f.services:
-    o.add g.genService(s)
-    o.add ""
+    if opts.blocking:
+      o.add g.genService(s)
+      o.add ""
+    if opts.async:
+      o.add g.genAsyncService(s)
+      o.add ""
   o.join("\n")
 
 # ================================================================ plugin I/O
@@ -750,9 +853,11 @@ proc main() =
   var r = initReader(input.toOpenArrayByte(0, input.high))
   var toGenerate: seq[string]
   var files: seq[FileDesc]
+  var param = ""
   readFields(r):
     case fieldNo
     of 1: toGenerate.add r.getString()
+    of 2: param = r.getString()
     of 15:
       var s = r.subReader()
       files.add parseFile(s)
@@ -762,10 +867,11 @@ proc main() =
   w.putTag(2, wtVarint)          # supported_features: proto3 optional
   w.putVarint(1)
   try:
+    let opts = parseOptions(param)
     let reg = buildRegistry(files)
     for f in files.mitems:
       if f.name notin toGenerate: continue
-      let content = generate(reg, f)
+      let content = generate(reg, f, opts)
       w.putTag(15, wtLen)
       let s = w.beginLen()
       w.putTag(1, wtLen)

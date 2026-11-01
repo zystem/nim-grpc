@@ -5,7 +5,9 @@ gRPC for Nim on top of [nghttp2](https://nghttp2.org).
 **Status:** early. Unary and streaming calls (client-, server- and
 bidirectional) work, client and server, over plaintext HTTP/2, TLS and mutual
 TLS, with optional gzip message compression, keepalive, graceful shutdown and
-reconnecting channels. 18 interop cases pass against
+reconnecting channels, through a blocking API or on
+[chronos](https://github.com/status-im/nim-chronos) ([docs/async.md](docs/async.md)).
+18 interop cases pass against
 grpc-go in both directions in each mode
 ([docs/interop.md](docs/interop.md)), with the Nim side written against code
 generated from the official interop protos. The HTTP/2 layer passes 135 of 146
@@ -132,6 +134,34 @@ while call.recv(reply): discard  # raises GrpcError on a non-OK status
 call.close()
 ```
 
+### chronos
+
+The same API as futures, for thousands of connections or calls on one thread
+(details in [docs/async.md](docs/async.md)). Generate the stubs with
+`--nim_opt=async` (or `blocking,async` for both):
+
+```nim
+import pkg/chronos
+import grpc/asynctyped, gen/helloworld_pb
+
+proc sayHello(ctx: AsyncServerContext; req: HelloRequest): Future[HelloReply] {.async.} =
+  return HelloReply(message: "Hello, " & req.name)
+
+let srv = newAsyncGrpcServer(port = 50051)
+srv.registerGreeter(GreeterAsyncHandlers(sayHello: sayHello))
+srv.start()
+
+proc main() {.async.} =
+  let greeter = newGreeterAsyncClient(await dialAsync("127.0.0.1", 50051))
+  echo (await greeter.sayHello(HelloRequest(name: "Nim"), timeoutMs = 1000)).message
+
+waitFor main()
+```
+
+When a call ends early (client cancel, deadline, lost connection, server
+stop) its handler future is cancelled, so whatever the handler awaits stops
+right away.
+
 ## Design
 
 - **I/O-free core.** `grpc/h2/session` wraps nghttp2's memory API: bytes go in
@@ -143,8 +173,10 @@ call.close()
   block on their own stream, with deadlines. A server handler starts when its
   request HEADERS arrive and runs on its own worker thread from a pool that
   grows on demand. Output is bounded per connection and per stream, so a slow
-  peer slows the sender down. A chronos adapter is planned. TLS with ALPN
-  `h2` lives in the adapters.
+  peer slows the sender down. `grpc/h2/async`: the same on chronos, with a
+  reader, a writer and a pinger future per connection and a future per call;
+  it reads straight from chronos' buffer. TLS with ALPN `h2` lives in the
+  adapters.
 - **TLS without I/O either.** BearSSL's engine is driven through four buffers
   under the connection lock (`grpc/tls`), so TLS fits the same threading model.
   TLS 1.2 only: BearSSL has no TLS 1.3.
@@ -166,8 +198,12 @@ cmake -S . -B build -DENABLE_LIB_ONLY=ON -DBUILD_SHARED_LIBS=OFF \
 cmake --build build -j && cmake --install build
 ```
 
-A different prefix is passed with `-d:nghttp2Prefix=/path`. Without nimble,
-point `NIM_BEARSSL` at a checkout of nim-bearssl (with its submodule).
+A different prefix is passed with `-d:nghttp2Prefix=/path`. The chronos API
+also needs chronos (`nimble install chronos`; it brings stew, results and
+httputils). Without nimble, point `NIM_BEARSSL` at a checkout of nim-bearssl
+(with its submodule) and `NIM_PATHS` at checkouts of nim-chronos, nim-stew,
+nim-results and nim-http-utils, separated by `:` (tested with chronos 4.4.1,
+stew 0.6.5, results 0.5.1, httputils 0.6.0).
 
 ```sh
 nimble test   # unit tests
@@ -183,7 +219,7 @@ nimble tsan   # the same under ThreadSanitizer
    metadata; interop tests against grpc-go — done
 4. Streaming calls (client, server, bidi) — done
 5. TLS with ALPN `h2`, mTLS — done
-6. chronos adapter
+6. chronos adapter — done
 7. Code generation from `.proto` — done
 8. Manual flow control for backpressure (`NO_AUTO_WINDOW_UPDATE`)
 9. Keepalive, GOAWAY handling, graceful shutdown, reconnect — done
@@ -213,3 +249,5 @@ Measured on Linux x86-64, glibc, `-d:release`:
   connection the server grew by about 86 KiB per connection: Nim's allocator
   keeps the heap of a thread that exits while memory it allocated is still in
   use elsewhere.
+- chronos server, one thread: 40 MiB RSS with 1,000 connections each holding
+  an open call, 190 MiB with 5,000 (about 38 KiB per connection).

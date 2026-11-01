@@ -4,8 +4,8 @@
 ## `proc encode(m: T): seq[byte]` and `proc decode(_: typedesc[T]; data: openArray[byte]): T`;
 ## the wrappers here only frame and unframe them.
 
-import ./status, ./client, ./server, ./protobuf
-export status, client, server
+import ./status, ./client, ./server, ./decode
+export status, client, server, decode
 
 type
   ClientReader*[Resp] = object
@@ -30,16 +30,6 @@ type
 
   ServerBidi*[Req, Resp] = object
     raw*: ptr ServerCall
-
-proc decodeMsg*[T](data: seq[byte]; code: StatusCode): T =
-  ## Decodes `data`; malformed input becomes GrpcError(`code`).
-  mixin decode
-  var bad = ""
-  try:
-    result = decode(T, data)
-  except ProtobufError as e:
-    bad = e.msg
-  if bad.len > 0: raise newGrpcError(code, "cannot decode " & $T & ": " & bad)
 
 # ---------------------------------------------------------------- client
 

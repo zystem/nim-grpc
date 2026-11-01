@@ -3,12 +3,14 @@
 import std/[options, tables]
 import grpc/protobuf
 import grpc/typed
+import pkg/chronos, grpc/asynctyped
 import "./empty_pb"
 import "./messages_pb"
 export protobuf
 export empty_pb
 export messages_pb
 export typed
+export chronos, asynctyped
 {.pop.}
 
 
@@ -88,6 +90,81 @@ proc registerTestService*(s: GrpcServer; h: TestServiceHandlers) =
   if h.halfDuplexCall != nil: addTypedBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/HalfDuplexCall", h.halfDuplexCall)
   if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.TestService/UnimplementedCall", h.unimplementedCall)
 
+# ---------------------------------------------------------------- async service grpc.testing.TestService
+
+type
+  TestServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.TestService.
+    ch*: AsyncChannel
+
+  TestServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.TestService; methods left nil
+    ## answer UNIMPLEMENTED.
+    emptyCall*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+    unaryCall*: AsyncUnaryFn[messages_pb.SimpleRequest, messages_pb.SimpleResponse]
+    cacheableUnaryCall*: AsyncUnaryFn[messages_pb.SimpleRequest, messages_pb.SimpleResponse]
+    streamingOutputCall*: AsyncServerStreamFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    streamingInputCall*: AsyncClientStreamFn[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse]
+    fullDuplexCall*: AsyncBidiFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    halfDuplexCall*: AsyncBidiFn[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]
+    unimplementedCall*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+
+proc newTestServiceAsyncClient*(ch: AsyncChannel): TestServiceAsyncClient = TestServiceAsyncClient(ch: ch)
+
+proc emptyCall*(c: TestServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression)).message
+
+proc emptyCallWithMetadata*(c: TestServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/EmptyCall", req, metadata, timeoutMs, compression)
+
+proc unaryCall*(c: TestServiceAsyncClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.SimpleResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression)).message
+
+proc unaryCallWithMetadata*(c: TestServiceAsyncClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.SimpleResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/UnaryCall", req, metadata, timeoutMs, compression)
+
+proc cacheableUnaryCall*(c: TestServiceAsyncClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.SimpleResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression)).message
+
+proc cacheableUnaryCallWithMetadata*(c: TestServiceAsyncClient; req: messages_pb.SimpleRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.SimpleResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.SimpleRequest, messages_pb.SimpleResponse](c.ch, "/grpc.testing.TestService/CacheableUnaryCall", req, metadata, timeoutMs, compression)
+
+proc streamingOutputCall*(c: TestServiceAsyncClient; req: messages_pb.StreamingOutputCallRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[AsyncClientReader[messages_pb.StreamingOutputCallResponse]] =
+  openReader[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/StreamingOutputCall", req, metadata, timeoutMs, compression)
+
+proc streamingInputCall*(c: TestServiceAsyncClient; metadata: Metadata = @[]; timeoutMs = -1;
+    compression = ""): Future[AsyncClientWriter[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse]] =
+  openWriter[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse](c.ch, "/grpc.testing.TestService/StreamingInputCall", metadata, timeoutMs, compression)
+
+proc fullDuplexCall*(c: TestServiceAsyncClient; metadata: Metadata = @[]; timeoutMs = -1;
+    compression = ""): Future[AsyncClientBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]] =
+  openBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/FullDuplexCall", metadata, timeoutMs, compression)
+
+proc halfDuplexCall*(c: TestServiceAsyncClient; metadata: Metadata = @[]; timeoutMs = -1;
+    compression = ""): Future[AsyncClientBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse]] =
+  openBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](c.ch, "/grpc.testing.TestService/HalfDuplexCall", metadata, timeoutMs, compression)
+
+proc unimplementedCall*(c: TestServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression)).message
+
+proc unimplementedCallWithMetadata*(c: TestServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.TestService/UnimplementedCall", req, metadata, timeoutMs, compression)
+
+proc registerTestService*(s: AsyncGrpcServer; h: TestServiceAsyncHandlers) =
+  ## Adds the methods of grpc.testing.TestService that `h` implements.
+  if h.emptyCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.TestService/EmptyCall", h.emptyCall)
+  if h.unaryCall != nil: addTypedUnary[messages_pb.SimpleRequest, messages_pb.SimpleResponse](s, "/grpc.testing.TestService/UnaryCall", h.unaryCall)
+  if h.cacheableUnaryCall != nil: addTypedUnary[messages_pb.SimpleRequest, messages_pb.SimpleResponse](s, "/grpc.testing.TestService/CacheableUnaryCall", h.cacheableUnaryCall)
+  if h.streamingOutputCall != nil: addTypedServerStream[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/StreamingOutputCall", h.streamingOutputCall)
+  if h.streamingInputCall != nil: addTypedClientStream[messages_pb.StreamingInputCallRequest, messages_pb.StreamingInputCallResponse](s, "/grpc.testing.TestService/StreamingInputCall", h.streamingInputCall)
+  if h.fullDuplexCall != nil: addTypedBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/FullDuplexCall", h.fullDuplexCall)
+  if h.halfDuplexCall != nil: addTypedBidi[messages_pb.StreamingOutputCallRequest, messages_pb.StreamingOutputCallResponse](s, "/grpc.testing.TestService/HalfDuplexCall", h.halfDuplexCall)
+  if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.TestService/UnimplementedCall", h.unimplementedCall)
+
 # ---------------------------------------------------------------- service grpc.testing.UnimplementedService
 
 type
@@ -110,6 +187,31 @@ proc unimplementedCallWithMetadata*(c: UnimplementedServiceClient; req: empty_pb
   unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression)
 
 proc registerUnimplementedService*(s: GrpcServer; h: UnimplementedServiceHandlers) =
+  ## Adds the methods of grpc.testing.UnimplementedService that `h` implements.
+  if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.UnimplementedService/UnimplementedCall", h.unimplementedCall)
+
+# ---------------------------------------------------------------- async service grpc.testing.UnimplementedService
+
+type
+  UnimplementedServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.UnimplementedService.
+    ch*: AsyncChannel
+
+  UnimplementedServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.UnimplementedService; methods left nil
+    ## answer UNIMPLEMENTED.
+    unimplementedCall*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+
+proc newUnimplementedServiceAsyncClient*(ch: AsyncChannel): UnimplementedServiceAsyncClient = UnimplementedServiceAsyncClient(ch: ch)
+
+proc unimplementedCall*(c: UnimplementedServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression)).message
+
+proc unimplementedCallWithMetadata*(c: UnimplementedServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.UnimplementedService/UnimplementedCall", req, metadata, timeoutMs, compression)
+
+proc registerUnimplementedService*(s: AsyncGrpcServer; h: UnimplementedServiceAsyncHandlers) =
   ## Adds the methods of grpc.testing.UnimplementedService that `h` implements.
   if h.unimplementedCall != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.UnimplementedService/UnimplementedCall", h.unimplementedCall)
 
@@ -147,6 +249,40 @@ proc registerReconnectService*(s: GrpcServer; h: ReconnectServiceHandlers) =
   if h.start != nil: addTypedUnary[messages_pb.ReconnectParams, empty_pb.Empty](s, "/grpc.testing.ReconnectService/Start", h.start)
   if h.stop != nil: addTypedUnary[empty_pb.Empty, messages_pb.ReconnectInfo](s, "/grpc.testing.ReconnectService/Stop", h.stop)
 
+# ---------------------------------------------------------------- async service grpc.testing.ReconnectService
+
+type
+  ReconnectServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.ReconnectService.
+    ch*: AsyncChannel
+
+  ReconnectServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.ReconnectService; methods left nil
+    ## answer UNIMPLEMENTED.
+    start*: AsyncUnaryFn[messages_pb.ReconnectParams, empty_pb.Empty]
+    stop*: AsyncUnaryFn[empty_pb.Empty, messages_pb.ReconnectInfo]
+
+proc newReconnectServiceAsyncClient*(ch: AsyncChannel): ReconnectServiceAsyncClient = ReconnectServiceAsyncClient(ch: ch)
+
+proc start*(c: ReconnectServiceAsyncClient; req: messages_pb.ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[messages_pb.ReconnectParams, empty_pb.Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression)).message
+
+proc startWithMetadata*(c: ReconnectServiceAsyncClient; req: messages_pb.ReconnectParams; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.ReconnectParams, empty_pb.Empty](c.ch, "/grpc.testing.ReconnectService/Start", req, metadata, timeoutMs, compression)
+
+proc stop*(c: ReconnectServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.ReconnectInfo] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, messages_pb.ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression)).message
+
+proc stopWithMetadata*(c: ReconnectServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.ReconnectInfo, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, messages_pb.ReconnectInfo](c.ch, "/grpc.testing.ReconnectService/Stop", req, metadata, timeoutMs, compression)
+
+proc registerReconnectService*(s: AsyncGrpcServer; h: ReconnectServiceAsyncHandlers) =
+  ## Adds the methods of grpc.testing.ReconnectService that `h` implements.
+  if h.start != nil: addTypedUnary[messages_pb.ReconnectParams, empty_pb.Empty](s, "/grpc.testing.ReconnectService/Start", h.start)
+  if h.stop != nil: addTypedUnary[empty_pb.Empty, messages_pb.ReconnectInfo](s, "/grpc.testing.ReconnectService/Stop", h.stop)
+
 # ---------------------------------------------------------------- service grpc.testing.LoadBalancerStatsService
 
 type
@@ -177,6 +313,40 @@ proc getClientAccumulatedStatsWithMetadata*(c: LoadBalancerStatsServiceClient; r
   unaryCallTyped[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression)
 
 proc registerLoadBalancerStatsService*(s: GrpcServer; h: LoadBalancerStatsServiceHandlers) =
+  ## Adds the methods of grpc.testing.LoadBalancerStatsService that `h` implements.
+  if h.getClientStats != nil: addTypedUnary[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientStats", h.getClientStats)
+  if h.getClientAccumulatedStats != nil: addTypedUnary[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", h.getClientAccumulatedStats)
+
+# ---------------------------------------------------------------- async service grpc.testing.LoadBalancerStatsService
+
+type
+  LoadBalancerStatsServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.LoadBalancerStatsService.
+    ch*: AsyncChannel
+
+  LoadBalancerStatsServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.LoadBalancerStatsService; methods left nil
+    ## answer UNIMPLEMENTED.
+    getClientStats*: AsyncUnaryFn[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse]
+    getClientAccumulatedStats*: AsyncUnaryFn[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse]
+
+proc newLoadBalancerStatsServiceAsyncClient*(ch: AsyncChannel): LoadBalancerStatsServiceAsyncClient = LoadBalancerStatsServiceAsyncClient(ch: ch)
+
+proc getClientStats*(c: LoadBalancerStatsServiceAsyncClient; req: messages_pb.LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.LoadBalancerStatsResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression)).message
+
+proc getClientStatsWithMetadata*(c: LoadBalancerStatsServiceAsyncClient; req: messages_pb.LoadBalancerStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.LoadBalancerStatsResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientStats", req, metadata, timeoutMs, compression)
+
+proc getClientAccumulatedStats*(c: LoadBalancerStatsServiceAsyncClient; req: messages_pb.LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.LoadBalancerAccumulatedStatsResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression)).message
+
+proc getClientAccumulatedStatsWithMetadata*(c: LoadBalancerStatsServiceAsyncClient; req: messages_pb.LoadBalancerAccumulatedStatsRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.LoadBalancerAccumulatedStatsResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](c.ch, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", req, metadata, timeoutMs, compression)
+
+proc registerLoadBalancerStatsService*(s: AsyncGrpcServer; h: LoadBalancerStatsServiceAsyncHandlers) =
   ## Adds the methods of grpc.testing.LoadBalancerStatsService that `h` implements.
   if h.getClientStats != nil: addTypedUnary[messages_pb.LoadBalancerStatsRequest, messages_pb.LoadBalancerStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientStats", h.getClientStats)
   if h.getClientAccumulatedStats != nil: addTypedUnary[messages_pb.LoadBalancerAccumulatedStatsRequest, messages_pb.LoadBalancerAccumulatedStatsResponse](s, "/grpc.testing.LoadBalancerStatsService/GetClientAccumulatedStats", h.getClientAccumulatedStats)
@@ -219,6 +389,49 @@ proc clearReturnStatusWithMetadata*(c: HookServiceClient; req: empty_pb.Empty; m
   unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression)
 
 proc registerHookService*(s: GrpcServer; h: HookServiceHandlers) =
+  ## Adds the methods of grpc.testing.HookService that `h` implements.
+  if h.hook != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.HookService/Hook", h.hook)
+  if h.setReturnStatus != nil: addTypedUnary[messages_pb.SetReturnStatusRequest, empty_pb.Empty](s, "/grpc.testing.HookService/SetReturnStatus", h.setReturnStatus)
+  if h.clearReturnStatus != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.HookService/ClearReturnStatus", h.clearReturnStatus)
+
+# ---------------------------------------------------------------- async service grpc.testing.HookService
+
+type
+  HookServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.HookService.
+    ch*: AsyncChannel
+
+  HookServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.HookService; methods left nil
+    ## answer UNIMPLEMENTED.
+    hook*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+    setReturnStatus*: AsyncUnaryFn[messages_pb.SetReturnStatusRequest, empty_pb.Empty]
+    clearReturnStatus*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+
+proc newHookServiceAsyncClient*(ch: AsyncChannel): HookServiceAsyncClient = HookServiceAsyncClient(ch: ch)
+
+proc hook*(c: HookServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression)).message
+
+proc hookWithMetadata*(c: HookServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/Hook", req, metadata, timeoutMs, compression)
+
+proc setReturnStatus*(c: HookServiceAsyncClient; req: messages_pb.SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[messages_pb.SetReturnStatusRequest, empty_pb.Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression)).message
+
+proc setReturnStatusWithMetadata*(c: HookServiceAsyncClient; req: messages_pb.SetReturnStatusRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.SetReturnStatusRequest, empty_pb.Empty](c.ch, "/grpc.testing.HookService/SetReturnStatus", req, metadata, timeoutMs, compression)
+
+proc clearReturnStatus*(c: HookServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression)).message
+
+proc clearReturnStatusWithMetadata*(c: HookServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.HookService/ClearReturnStatus", req, metadata, timeoutMs, compression)
+
+proc registerHookService*(s: AsyncGrpcServer; h: HookServiceAsyncHandlers) =
   ## Adds the methods of grpc.testing.HookService that `h` implements.
   if h.hook != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.HookService/Hook", h.hook)
   if h.setReturnStatus != nil: addTypedUnary[messages_pb.SetReturnStatusRequest, empty_pb.Empty](s, "/grpc.testing.HookService/SetReturnStatus", h.setReturnStatus)
@@ -267,6 +480,49 @@ proc registerXdsUpdateHealthService*(s: GrpcServer; h: XdsUpdateHealthServiceHan
   if h.setNotServing != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.XdsUpdateHealthService/SetNotServing", h.setNotServing)
   if h.sendHookRequest != nil: addTypedUnary[messages_pb.HookRequest, messages_pb.HookResponse](s, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", h.sendHookRequest)
 
+# ---------------------------------------------------------------- async service grpc.testing.XdsUpdateHealthService
+
+type
+  XdsUpdateHealthServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.XdsUpdateHealthService.
+    ch*: AsyncChannel
+
+  XdsUpdateHealthServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.XdsUpdateHealthService; methods left nil
+    ## answer UNIMPLEMENTED.
+    setServing*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+    setNotServing*: AsyncUnaryFn[empty_pb.Empty, empty_pb.Empty]
+    sendHookRequest*: AsyncUnaryFn[messages_pb.HookRequest, messages_pb.HookResponse]
+
+proc newXdsUpdateHealthServiceAsyncClient*(ch: AsyncChannel): XdsUpdateHealthServiceAsyncClient = XdsUpdateHealthServiceAsyncClient(ch: ch)
+
+proc setServing*(c: XdsUpdateHealthServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression)).message
+
+proc setServingWithMetadata*(c: XdsUpdateHealthServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetServing", req, metadata, timeoutMs, compression)
+
+proc setNotServing*(c: XdsUpdateHealthServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[empty_pb.Empty] {.async.} =
+  return (await unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression)).message
+
+proc setNotServingWithMetadata*(c: XdsUpdateHealthServiceAsyncClient; req: empty_pb.Empty; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: empty_pb.Empty, headers, trailers: Metadata]] =
+  unaryCallTyped[empty_pb.Empty, empty_pb.Empty](c.ch, "/grpc.testing.XdsUpdateHealthService/SetNotServing", req, metadata, timeoutMs, compression)
+
+proc sendHookRequest*(c: XdsUpdateHealthServiceAsyncClient; req: messages_pb.HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.HookResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.HookRequest, messages_pb.HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression)).message
+
+proc sendHookRequestWithMetadata*(c: XdsUpdateHealthServiceAsyncClient; req: messages_pb.HookRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.HookResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.HookRequest, messages_pb.HookResponse](c.ch, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", req, metadata, timeoutMs, compression)
+
+proc registerXdsUpdateHealthService*(s: AsyncGrpcServer; h: XdsUpdateHealthServiceAsyncHandlers) =
+  ## Adds the methods of grpc.testing.XdsUpdateHealthService that `h` implements.
+  if h.setServing != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.XdsUpdateHealthService/SetServing", h.setServing)
+  if h.setNotServing != nil: addTypedUnary[empty_pb.Empty, empty_pb.Empty](s, "/grpc.testing.XdsUpdateHealthService/SetNotServing", h.setNotServing)
+  if h.sendHookRequest != nil: addTypedUnary[messages_pb.HookRequest, messages_pb.HookResponse](s, "/grpc.testing.XdsUpdateHealthService/SendHookRequest", h.sendHookRequest)
+
 # ---------------------------------------------------------------- service grpc.testing.XdsUpdateClientConfigureService
 
 type
@@ -289,5 +545,30 @@ proc configureWithMetadata*(c: XdsUpdateClientConfigureServiceClient; req: messa
   unaryCallTyped[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression)
 
 proc registerXdsUpdateClientConfigureService*(s: GrpcServer; h: XdsUpdateClientConfigureServiceHandlers) =
+  ## Adds the methods of grpc.testing.XdsUpdateClientConfigureService that `h` implements.
+  if h.configure != nil: addTypedUnary[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](s, "/grpc.testing.XdsUpdateClientConfigureService/Configure", h.configure)
+
+# ---------------------------------------------------------------- async service grpc.testing.XdsUpdateClientConfigureService
+
+type
+  XdsUpdateClientConfigureServiceAsyncClient* = object
+    ## Typed chronos client for grpc.testing.XdsUpdateClientConfigureService.
+    ch*: AsyncChannel
+
+  XdsUpdateClientConfigureServiceAsyncHandlers* = object
+    ## Async server implementation of grpc.testing.XdsUpdateClientConfigureService; methods left nil
+    ## answer UNIMPLEMENTED.
+    configure*: AsyncUnaryFn[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse]
+
+proc newXdsUpdateClientConfigureServiceAsyncClient*(ch: AsyncChannel): XdsUpdateClientConfigureServiceAsyncClient = XdsUpdateClientConfigureServiceAsyncClient(ch: ch)
+
+proc configure*(c: XdsUpdateClientConfigureServiceAsyncClient; req: messages_pb.ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""): Future[messages_pb.ClientConfigureResponse] {.async.} =
+  return (await unaryCallTyped[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression)).message
+
+proc configureWithMetadata*(c: XdsUpdateClientConfigureServiceAsyncClient; req: messages_pb.ClientConfigureRequest; metadata: Metadata = @[]; timeoutMs = -1; compression = ""):
+    Future[tuple[message: messages_pb.ClientConfigureResponse, headers, trailers: Metadata]] =
+  unaryCallTyped[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](c.ch, "/grpc.testing.XdsUpdateClientConfigureService/Configure", req, metadata, timeoutMs, compression)
+
+proc registerXdsUpdateClientConfigureService*(s: AsyncGrpcServer; h: XdsUpdateClientConfigureServiceAsyncHandlers) =
   ## Adds the methods of grpc.testing.XdsUpdateClientConfigureService that `h` implements.
   if h.configure != nil: addTypedUnary[messages_pb.ClientConfigureRequest, messages_pb.ClientConfigureResponse](s, "/grpc.testing.XdsUpdateClientConfigureService/Configure", h.configure)

@@ -61,6 +61,22 @@ Keepalive, beyond the official suite:
   with UNAVAILABLE, and the next call goes over a new connection
   (`interop client ... keepalive_enforced`).
 
+## chronos peer, 2026-11-01
+
+`tests/interop/ainterop.nim` runs the same cases on the chronos API, against
+the async stubs generated with `--nim_opt=async`, plus `concurrent_load`
+(2,000 unary calls and 100 server streams at once on one channel, from one
+thread). Every combination passes in plaintext, TLS and mutual TLS:
+
+| Client → server | Result |
+|:---|:---|
+| chronos → chronos | 19/19 |
+| blocking → chronos | 18/18 |
+| chronos → blocking | 19/19 |
+| grpc-go → chronos | all pass, compression probes included |
+| chronos → grpc-go | 19/19 with `--lenient-compression` (see above) |
+| chronos → grpc-go, `keepalive_enforced` | pass: GOAWAY too_many_pings, UNAVAILABLE, then a new connection |
+
 Not covered yet: the Google auth cases (they need Google credentials), and the
 load-balancing and xDS cases.
 
@@ -80,6 +96,14 @@ x/text, protobuf-go and go-genproto (googleapis/rpc).
 
 Add `--tls` or `--mtls` to the Nim peer, and `-tls tls` or `-tls mtls -certs tests/certs` to
 the Go peer, to run the same cases over TLS.
+
+The chronos peer takes the same arguments:
+
+```sh
+nim c -d:release tests/interop/ainterop.nim
+tests/interop/ainterop server 10012 &
+tests/interop/ainterop client 127.0.0.1 10012
+```
 
 ```sh
 ./peer -mode server -addr 127.0.0.1:10011 &
