@@ -22,6 +22,8 @@ Licenses: dependencies must be under permissive licenses (MIT, BSD, Apache-2.0, 
 
 Tools: AddressSanitizer and LeakSanitizer on every push and pull request (`nimble asan`), ThreadSanitizer by hand before a release (`nimble tsan`), the Nim compiler's own warnings. CodeQL does not support Nim, and the project knows of no static analyser for Nim beyond the compiler.
 
+Long-running checks: the weekly soak test (`.github/workflows/soak.yml`, `tools/soak.sh`) runs the chronos server under connection churn for 15 minutes, plain and TLS, and fails on growth of resident memory or open descriptors; an issue is opened on a breach.
+
 Threshold: a sanitizer report of any severity is fixed before the change is merged; a test that exposes it is added. CI fails on a report.
 
 ## Secrets and credentials

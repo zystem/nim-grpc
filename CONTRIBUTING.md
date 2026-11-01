@@ -14,5 +14,5 @@
 ## When and how the tests run
 
 - **By you, before a pull request**: `nimble test`; for code that touches memory or threads also `nimble asan` and `nimble tsan`. Interop with grpc-go and h2spec need extra tools and are run by hand ([docs/interop.md](docs/interop.md), [docs/h2spec.md](docs/h2spec.md)).
-- **Automatically**: on every push to `main` and every pull request, `.github/workflows/ci.yml` builds nghttp2 and runs all test files plainly and under AddressSanitizer/LeakSanitizer; Dependency Review runs on pull requests; Scorecard runs on its own schedule; Dependabot proposes updates of the actions.
+- **Automatically**: on every push to `main` and every pull request, `.github/workflows/ci.yml` builds nghttp2 and runs all test files plainly and under AddressSanitizer/LeakSanitizer; Dependency Review runs on pull requests; Scorecard runs on its own schedule; Dependabot proposes updates of the actions. Weekly, `soak.yml` runs `tools/soak.sh`: server memory per connection (plain and TLS) and no growth of memory or descriptors under connection churn; a breach opens an issue.
 - **A change of behaviour** (a fix, a feature) adds or updates a test in the automatic suite; a pull request without one is asked to add it.

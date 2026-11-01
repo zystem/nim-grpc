@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Weekly soak test of the chronos server (`tools/soak.sh`, `.github/workflows/soak.yml`): memory per connection and no growth under churn, plain and TLS. `tools/asyncload.nim` gained `hold`, `churn` and `tls` modes.
+
 ## 0.0.1 — 2026-11-02
 
 ### Security

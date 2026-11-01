@@ -128,6 +128,10 @@ Linux x86-64, `-d:release`, one thread (`tools/asyncload.nim`):
 - Server RSS with 1,000 connections, each with a bidirectional call open:
   40 MiB; with 5,000: 190 MiB. About 38 KiB per connection with an open call,
   of which about 9 KiB is the nghttp2 session and 4 KiB chronos' read buffer.
+  With TLS about 75 KiB (BearSSL's two 16 KiB record buffers live in each
+  connection). `.github/workflows/soak.yml` repeats the measurement each week
+  (`tools/soak.sh`, plain and TLS) and fails when it passes 60 and 100 KiB, or when
+  the server's memory or descriptors grow during connection churn.
   The connection reads straight from that buffer, with no buffer of its own.
 - 5,000 concurrent unary calls on one channel, and 1,000 concurrent streams on
   one connection, from one thread (`tests/tasyncgrpc.nim`, `tests/tasynch2.nim`).
