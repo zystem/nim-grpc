@@ -5,7 +5,7 @@
 ##   interop server PORT [--tls|--mtls] [--certs=DIR]
 ##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR] [--lenient-compression]
 
-import std/[os, strutils]
+import std/strutils
 import grpc, grpc/cleanup
 import ../gen/grpc/testing/test_pb
 
@@ -329,6 +329,7 @@ proc runClient*(host: string; port: int; only: seq[string] = @[];
   ch.close()
 
 when isMainModule:
+  import std/os
   var pos: seq[string]
   var mode = ""
   var certs = currentSourcePath.parentDir.parentDir / "certs"

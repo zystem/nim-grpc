@@ -1,6 +1,6 @@
 ## gRPC wire helpers, and the unary interop cases run in-process.
 
-import std/[unittest, strutils]
+import std/unittest
 import grpc, grpc/wire
 import ./interop/interop
 import ./gen/grpc/testing/test_pb
