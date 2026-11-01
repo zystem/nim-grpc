@@ -14,12 +14,14 @@ env:
 
 jobs:
   test:
-    name: tests (${{ matrix.mode }})
+    name: tests (${{ matrix.mode }}, Nim ${{ matrix.nim }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         mode: [plain, asan]
+        # the oldest Nim that grpc.nimble allows, and the current stable one (Renovate moves the second)
+        nim: ["2.2.12", "2.2.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,7 +47,7 @@ jobs:
           sudo cmake --install build
       - uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
-          nim-version: 2.2.12
+          nim-version: ${{ matrix.nim }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: nimble install -y --depsOnly
       - name: Run all test files
