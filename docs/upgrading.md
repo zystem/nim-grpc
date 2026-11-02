@@ -6,9 +6,9 @@ General steps: update the package (`nimble install nimgrpc@X.Y.Z` or the new com
 
 ## Unreleased
 
-## 0.0.3
+## 0.1.0
 
-- **The package is called `nimgrpc`** (the name `grpc` in the nimble directory belongs to another project). Install with `nimble install nimgrpc`, and in a `.nimble` file write `requires "nimgrpc >= 0.0.3"`. The modules keep their names: `import grpc/...` is unchanged, so a program cannot have this package and the other `grpc` package in one build. Nothing else changes in the code.
+- **The package and the modules are called `nimgrpc`** (the name `grpc` in the nimble directory belongs to another project). Install with `nimble install nimgrpc`, and in a `.nimble` file write `requires "nimgrpc >= 0.1.0"`. In your code replace `import grpc` with `import nimgrpc` and `grpc/...` with `nimgrpc/...` in every import (`grpc/protobuf`, `grpc/typed`, `grpc/h2/blocking`, `grpc/wkt/...`), for example `sed -i -E 's/\b(import|from) grpc\b/\1 nimgrpc/; s/\bgrpc\/(protobuf|typed|asynctyped|wkt|h2|tls|compress|client|server|asyncclient|asyncserver|wire|status)/nimgrpc\/\1/g'`. The generated code of your `.proto` files imports the library too: regenerate it with the new `protoc-gen-nim`. Nothing else changes in the API.
 
 ## 0.0.2
 

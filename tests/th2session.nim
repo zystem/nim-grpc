@@ -1,7 +1,7 @@
 ## Two I/O-free sessions wired back to back in memory.
 
 import std/[unittest, strutils]
-import grpc/h2/session
+import nimgrpc/h2/session
 
 proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
 proc toStr(b: seq[byte]): string =

@@ -3,7 +3,7 @@
 ##   h2spec -h 127.0.0.1 -p 8080
 
 import std/[os, strutils]
-import grpc/h2/blocking
+import nimgrpc/h2/blocking
 
 proc handler(req: Request; ud: pointer): Reply {.nimcall, gcsafe, raises: [].} =
   result.headers = @[(":status", "200"), ("content-type", "text/plain")]

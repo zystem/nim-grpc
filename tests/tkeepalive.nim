@@ -1,7 +1,7 @@
 ## Keepalive, ping enforcement, graceful shutdown and reconnecting channels.
 
 import std/[unittest, net, os, times, typedthreads, atomics]
-import grpc
+import nimgrpc
 import ./gen/grpc/testing/test_pb
 
 var handlerEndedMs: Atomic[int64]   ## when the last slowUnary returned or raised

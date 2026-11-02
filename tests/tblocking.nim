@@ -1,7 +1,7 @@
 ## Blocking client and server over loopback TCP.
 
 import std/[unittest, strutils, typedthreads, os, times]
-import grpc/h2/blocking
+import nimgrpc/h2/blocking
 
 proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
 proc toStr(b: seq[byte]): string =

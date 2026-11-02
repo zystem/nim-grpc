@@ -5,14 +5,14 @@ What is in the system, who acts, and what each action does. Details: [threat-mod
 ```
  caller code ── typed stubs (generated) ──┐
                                           ▼
-                  grpc/client.nim, grpc/server.nim            (blocking API, threads)
-                  grpc/asyncclient.nim, asyncserver.nim       (chronos API, one thread)
+                  nimgrpc/client.nim, nimgrpc/server.nim            (blocking API, threads)
+                  nimgrpc/asyncclient.nim, asyncserver.nim       (chronos API, one thread)
                          │ gRPC: framing, status, metadata, deadlines, gzip
                          ▼
-                  grpc/h2/blocking.nim | grpc/h2/async.nim    (I/O adapters, TLS, keepalive)
+                  nimgrpc/h2/blocking.nim | nimgrpc/h2/async.nim    (I/O adapters, TLS, keepalive)
                          │ bytes in, bytes out, events
                          ▼
-                  grpc/h2/session.nim ──── nghttp2 (C, static)    TLS: BearSSL    gzip: zlib
+                  nimgrpc/h2/session.nim ──── nghttp2 (C, static)    TLS: BearSSL    gzip: zlib
 ```
 
 The HTTP/2 session (`h2/session.nim`) never touches a socket: bytes go in, bytes and events come out, so the blocking adapter, the chronos adapter and the tests all drive it the same way.

@@ -3,8 +3,8 @@
 
 import std/[unittest, strutils, typedthreads, atomics]
 import pkg/chronos
-import grpc/[asyncclient, asyncserver]
-from grpc/client as bc import nil
+import nimgrpc/[asyncclient, asyncserver]
+from nimgrpc/client as bc import nil
 
 proc toBytes(s: string): seq[byte] = @(s.toOpenArrayByte(0, s.high))
 proc toStr(b: seq[byte]): string =

@@ -42,7 +42,7 @@ in `unaryCall` and in `blocking.request`.
 
 Report text: [nim-issue-finally.md](nim-issue-finally.md).
 
-**Workaround.** `grpc/cleanup.withCleanup` catches, runs the cleanup with no
+**Workaround.** `nimgrpc/cleanup.withCleanup` catches, runs the cleanup with no
 exception pending, and re-raises. Every `finally` left in the library only
 releases a lock (`pthread_mutex_unlock`, which has no exception handling of
 its own). Tests use `withCleanup` instead of `defer` for anything that may
@@ -51,7 +51,7 @@ and other cleanup, or check the results some other way.
 
 ## 2. A call through a generic proc type with a `raises` list lost its check
 
-In `grpc/typed`, a handler was called as `let resp = f(ctx, input)` where `f`
+In `nimgrpc/typed`, a handler was called as `let resp = f(ctx, input)` where `f`
 had the type `ClientStreamFn[Req, Resp]`, a generic proc type with
 `raises: [CatchableError]`. The generated C had no error check after the call:
 a handler that raised let execution continue, and the next `raise` on that
@@ -60,5 +60,5 @@ reproduction outside the library has not succeeded, so the trigger is not
 pinned down.
 
 **Workaround.** The handler types carry no `raises` list, and handler calls
-are wrapped (`guarded` in `grpc/typed`). The regression test is in
+are wrapped (`guarded` in `nimgrpc/typed`). The regression test is in
 tests/tgrpc.nim, "a typed streaming handler that raises".

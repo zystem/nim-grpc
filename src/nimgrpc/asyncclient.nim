@@ -1,6 +1,6 @@
 ## gRPC client on chronos.
 ##
-## The async twin of `grpc/client`: `unaryCall` for the common case,
+## The async twin of `nimgrpc/client`: `unaryCall` for the common case,
 ## `newCall` for streaming (`send`, `closeSend`, then `recv` until it returns
 ## `none`). A non-OK status is raised as GrpcError from whichever call sees
 ## the end of the stream.

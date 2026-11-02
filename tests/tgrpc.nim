@@ -1,7 +1,7 @@
 ## gRPC wire helpers, and the unary interop cases run in-process.
 
 import std/unittest
-import grpc, grpc/wire
+import nimgrpc, nimgrpc/wire
 import ./interop/interop
 import ./gen/grpc/testing/test_pb
 
@@ -122,8 +122,8 @@ suite "handler errors":
     ch.close()
     srv.stop()
 
-import grpc/compress/gzip
-import grpc/h2/blocking as h2b
+import nimgrpc/compress/gzip
+import nimgrpc/h2/blocking as h2b
 
 suite "compression":
   test "gzip round trip":

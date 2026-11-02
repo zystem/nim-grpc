@@ -7,7 +7,7 @@
 
 import std/[os, strutils]
 import pkg/chronos
-import grpc/asynctyped
+import nimgrpc/asynctyped
 import ../gen/grpc/testing/test_pb
 
 const

@@ -26,7 +26,7 @@ protoc --plugin=protoc-gen-nim=src/protoc_gen_nim --nim_out=gen -Iproto hellowor
 ```
 
 ```nim
-import grpc, gen/helloworld_pb
+import nimgrpc, gen/helloworld_pb
 
 proc sayHello(ctx: var ServerContext; req: HelloRequest): HelloReply {.nimcall, gcsafe.} =
   HelloReply(message: "Hello, " & req.name)
@@ -43,7 +43,7 @@ Streaming methods get `ClientReader` / `ClientWriter` / `ClientBidi` on the
 client side and `ServerWriter` / `ServerReader` / `ServerBidi` in handlers.
 
 The well-known types (`google/protobuf/*.proto`) come with the package, and
-generated code imports them from there. `import grpc/wkt` adds conversions:
+generated code imports them from there. `import nimgrpc/wkt` adds conversions:
 `Timestamp` to and from `times.Time`, protobuf `Duration` to and from
 `times.Duration`, `pack`/`unpack`/`isA` for `Any`, and `Struct`/`Value` to and
 from `JsonNode`.
@@ -58,7 +58,7 @@ maps, oneofs, optional, recursion and proto2 (`tests/tcodec.nim`).
 The same calls without generated code, on raw message bytes:
 
 ```nim
-import grpc
+import nimgrpc
 
 proc sayHello(ctx: var ServerContext; req: seq[byte]): seq[byte]
     {.nimcall, gcsafe, raises: [CatchableError].} =
@@ -144,7 +144,7 @@ The same API as futures, for thousands of connections or calls on one thread
 
 ```nim
 import pkg/chronos
-import grpc/asynctyped, gen/helloworld_pb
+import nimgrpc/asynctyped, gen/helloworld_pb
 
 proc sayHello(ctx: AsyncServerContext; req: HelloRequest): Future[HelloReply] {.async.} =
   return HelloReply(message: "Hello, " & req.name)
@@ -166,21 +166,21 @@ right away.
 
 ## Design
 
-- **I/O-free core.** `grpc/h2/session` wraps nghttp2's memory API: bytes go in
+- **I/O-free core.** `nimgrpc/h2/session` wraps nghttp2's memory API: bytes go in
   with `recv`, bytes to transmit come out of `takeOutput`, and stream events come
   out of `takeEvents`. The core never touches a socket, so the same code runs
   under blocking threads, chronos, or a test that pipes two sessions together.
-- **Adapters on top.** `grpc/h2/blocking`: a reader and a writer thread per
+- **Adapters on top.** `nimgrpc/h2/blocking`: a reader and a writer thread per
   connection, the connection lock is never held during socket I/O, callers
   block on their own stream, with deadlines. A server handler starts when its
   request HEADERS arrive and runs on its own worker thread from a pool that
   grows on demand. Output is bounded per connection and per stream, so a slow
-  peer slows the sender down. `grpc/h2/async`: the same on chronos, with a
+  peer slows the sender down. `nimgrpc/h2/async`: the same on chronos, with a
   reader, a writer and a pinger future per connection and a future per call;
   it reads straight from chronos' buffer. TLS with ALPN `h2` lives in the
   adapters.
 - **TLS without I/O either.** BearSSL's engine is driven through four buffers
-  under the connection lock (`grpc/tls`), so TLS fits the same threading model.
+  under the connection lock (`nimgrpc/tls`), so TLS fits the same threading model.
   TLS 1.2 only: BearSSL has no TLS 1.3.
 - **ORC-safe FFI.** nghttp2 only ever sees raw `ptr` to objects the session owns;
   callbacks are `raises: []` and never let an exception reach C.

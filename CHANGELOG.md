@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-## 0.0.3 — 2026-11-03
+## 0.1.0 — 2026-11-03
 
 ### Changed
-- The nimble package is now `nimgrpc` (`nimgrpc.nimble`), so that it can be listed in the nimble directory, where `grpc` is taken. The modules are still `grpc/...`. See [docs/upgrading.md](docs/upgrading.md).
+- The nimble package is now `nimgrpc` (`nimgrpc.nimble`) and so are the modules: `import grpc` becomes `import nimgrpc`, `import grpc/protobuf` becomes `import nimgrpc/protobuf`, and so on. The name `grpc` in the nimble directory belongs to another project, and two packages with a `grpc` module cannot be used in one build. Regenerate the code of your `.proto` files with the new `protoc-gen-nim`. See [docs/upgrading.md](docs/upgrading.md).
 
 ## 0.0.2 — 2026-11-03
 
