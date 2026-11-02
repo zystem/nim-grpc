@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <time.h>
 #include "bearssl.h"
 
 /* ------------------------------------------------------------------ buffers */
@@ -135,16 +136,39 @@ typedef struct {
     unsigned char *key_mem;        /* owns the key's byte arrays */
     int require_client_cert;
     int cipher_order;              /* 0: by the CPU, 1: AES-GCM first, 2: ChaCha20 first */
+    int lifetime;                  /* seconds a session may be resumed; 0: never */
+    pthread_mutex_t mu;            /* guards `cache` (creation) and the saved client session */
+    struct gtls_cache *cache;      /* server: sessions that may be resumed */
+    int have_session;              /* client: the last verified session ... */
+    br_ssl_session_parameters csess;
+    char cname[256];               /* ... and the server name it was made for */
+    long long ctime;               /* ... and when (monotonic seconds) */
     char err[160];
 } gtls_conf;
 
+#define DEFAULT_LIFETIME 3600
+#define CACHE_BYTES (128 * 1024)
+
+static long long now_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec;
+}
+
 gtls_conf *gtls_conf_new(void) {
-    return calloc(1, sizeof(gtls_conf));
+    gtls_conf *c = calloc(1, sizeof(gtls_conf));
+    if (c) {
+        c->lifetime = DEFAULT_LIFETIME;
+        pthread_mutex_init(&c->mu, NULL);
+    }
+    return c;
 }
 
 const char *gtls_conf_error(gtls_conf *c) { return c->err; }
 
 void gtls_conf_set_cipher_order(gtls_conf *c, int order) { c->cipher_order = order; }
+
+void gtls_conf_set_lifetime(gtls_conf *c, int seconds) { c->lifetime = seconds < 0 ? 0 : seconds; }
 
 static void dn_append(void *ctx, const void *buf, size_t len) {
     gbuf_add((gbuf *)ctx, buf, len);
@@ -256,6 +280,8 @@ int gtls_conf_set_identity(gtls_conf *c, const unsigned char *chain_pem, size_t 
 
 void gtls_conf_require_client_cert(gtls_conf *c, int on) { c->require_client_cert = on; }
 
+static void cache_free(struct gtls_cache *k);
+
 void gtls_conf_free(gtls_conf *c) {
     if (!c) return;
     for (size_t i = 0; i < c->ta_num; i++) {
@@ -269,6 +295,9 @@ void gtls_conf_free(gtls_conf *c) {
         }
     }
     free(c->tas);
+    cache_free(c->cache);
+    pthread_mutex_destroy(&c->mu);
+    memset(&c->csess, 0, sizeof c->csess);       /* the master secret */
     for (size_t i = 0; i < c->chain_len; i++) free(c->chain[i].data);
     free(c->chain);
     if (c->key_mem) {
@@ -293,11 +322,13 @@ typedef struct {
     const br_x509_class *vtable;
     const br_x509_class **inner;
     int validated;
+    int chain_seen;                /* a certificate chain was presented in this handshake */
 } x509_watch;
 
 static void xw_start_chain(const br_x509_class **ctx, const char *name) {
     x509_watch *w = (x509_watch *)ctx;
     w->validated = 0;
+    w->chain_seen = 1;
     (*w->inner)->start_chain(w->inner, name);
 }
 static void xw_start_cert(const br_x509_class **ctx, uint32_t len) {
@@ -337,11 +368,104 @@ typedef struct {
     x509_watch watch;
     int is_server;
     int verify_peer;               /* the peer must present a valid chain */
+    gtls_conf *conf;
+    char sni[256];                 /* client: the name the session is for */
+    int resumed;                   /* server: the session came out of the cache */
+    int offered;                   /* client: a saved session was offered ... */
+    unsigned char offered_id[32];  /* ... under this id */
+    size_t offered_len;
+    int saved;                     /* client: the session has been kept for next time */
     const char *alpn[1];
     unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
 } gtls_conn;
 
 static const char *h2_name = "h2";
+
+/* ---------------------------------------------------------- session cache
+ *
+ * Session resumption (TLS 1.2 session ids) skips the public-key work of a
+ * handshake. BearSSL's LRU cache is not thread-safe and has no lifetime, so it
+ * is wrapped: a mutex around every call, and the whole cache is dropped once
+ * `lifetime` seconds have passed since it was started, so no session lives
+ * longer than that. Only sessions of peers that were authenticated as required
+ * are kept (checked in `cache_save`).
+ */
+
+typedef struct gtls_cache {
+    const br_ssl_session_cache_class *vt;
+    br_ssl_session_cache_lru lru;
+    pthread_mutex_t mu;
+    unsigned char *buf;
+    long long epoch;
+    int lifetime;
+} gtls_cache;
+
+static void cache_expire(gtls_cache *k) {
+    long long now = now_s();
+    if (now - k->epoch >= k->lifetime) {
+        br_ssl_session_cache_lru_init(&k->lru, k->buf, CACHE_BYTES);
+        k->epoch = now;
+    }
+}
+
+static void cache_save(const br_ssl_session_cache_class **ctx, br_ssl_server_context *sc,
+                       const br_ssl_session_parameters *params) {
+    gtls_cache *k = (gtls_cache *)ctx;
+    gtls_conn *t = (gtls_conn *)sc;            /* the server context is the first member */
+    if (t->verify_peer && !t->watch.validated) return;
+    pthread_mutex_lock(&k->mu);
+    cache_expire(k);
+    k->lru.vtable->save(&k->lru.vtable, sc, params);
+    pthread_mutex_unlock(&k->mu);
+}
+
+static int cache_load(const br_ssl_session_cache_class **ctx, br_ssl_server_context *sc,
+                      br_ssl_session_parameters *params) {
+    gtls_cache *k = (gtls_cache *)ctx;
+    gtls_conn *t = (gtls_conn *)sc;
+    pthread_mutex_lock(&k->mu);
+    cache_expire(k);
+    int r = k->lru.vtable->load(&k->lru.vtable, sc, params);
+    pthread_mutex_unlock(&k->mu);
+    if (r) t->resumed = 1;
+    return r;
+}
+
+static const br_ssl_session_cache_class cache_class = {
+    sizeof(gtls_cache), cache_save, cache_load
+};
+
+static void cache_free(gtls_cache *k) {
+    if (!k) return;
+    pthread_mutex_destroy(&k->mu);
+    free(k->buf);
+    free(k);
+}
+
+/* The cache of a server configuration, made on first use; NULL if resumption is off. */
+static gtls_cache *conf_cache(gtls_conf *c) {
+    if (c->lifetime <= 0) return NULL;
+    pthread_mutex_lock(&c->mu);
+    if (!c->cache) {
+        gtls_cache *k = calloc(1, sizeof *k);
+        unsigned char *buf = malloc(CACHE_BYTES);
+        if (k && buf) {
+            k->vt = &cache_class;
+            k->buf = buf;
+            k->lifetime = c->lifetime;
+            k->epoch = now_s();
+            pthread_mutex_init(&k->mu, NULL);
+            br_ssl_session_cache_lru_init(&k->lru, buf, CACHE_BYTES);
+            c->cache = k;
+        } else {
+            free(k);
+            free(buf);
+        }
+    }
+    gtls_cache *k = c->cache;
+    pthread_mutex_unlock(&c->mu);
+    return k;
+}
 
 /* Only forward-secret key agreement with an AEAD cipher. BearSSL's "full"
  * profiles also offer static RSA, CBC and 3DES suites; those are dropped.
@@ -470,7 +594,20 @@ gtls_conn *gtls_client_new(gtls_conf *c, const char *server_name) {
                                         &c->ec, BR_KEYTYPE_SIGN, 0,
                                         ec_best(), br_ecdsa_sign_asn1_get_default());
     }
-    if (!br_ssl_client_reset(&t->u.client, server_name, 0)) {
+    t->conf = c;
+    snprintf(t->sni, sizeof t->sni, "%s", server_name ? server_name : "");
+    if (c->lifetime > 0 && server_name) {
+        pthread_mutex_lock(&c->mu);
+        if (c->have_session && now_s() - c->ctime < c->lifetime &&
+            strcmp(c->cname, server_name) == 0) {
+            br_ssl_engine_set_session_parameters(t->eng, &c->csess);
+            t->offered = 1;
+            t->offered_len = c->csess.session_id_len;
+            memcpy(t->offered_id, c->csess.session_id, t->offered_len);
+        }
+        pthread_mutex_unlock(&c->mu);
+    }
+    if (!br_ssl_client_reset(&t->u.client, server_name, t->offered)) {
         free(t);
         return NULL;
     }
@@ -490,6 +627,9 @@ gtls_conn *gtls_server_new(gtls_conf *c) {
         br_ssl_server_init_full_ec(&t->u.server, c->chain, c->chain_len,
                                    BR_KEYTYPE_EC, &c->ec);
     setup_common(t, c);
+    t->conf = c;
+    gtls_cache *k = conf_cache(c);
+    if (k) br_ssl_server_set_cache(&t->u.server, &k->vt);
     if (c->require_client_cert) {
         br_ssl_server_set_trust_anchor_names_alt(&t->u.server, c->tas, c->ta_num);
         /* The server only asks for certificate types it can verify; the
@@ -575,4 +715,37 @@ void gtls_close(gtls_conn *t) { br_ssl_engine_close(t->eng); }
 const char *gtls_alpn(gtls_conn *t) { return br_ssl_engine_get_selected_protocol(t->eng); }
 
 /* After the handshake: 1 if the peer is authenticated as required. */
-int gtls_peer_ok(gtls_conn *t) { return !t->verify_peer || t->watch.validated; }
+/* After the handshake: 1 if the session was resumed rather than made afresh. */
+int gtls_resumed(gtls_conn *t) {
+    if (t->watch.chain_seen) return 0;
+    if (t->is_server) return t->resumed;
+    br_ssl_session_parameters p;
+    br_ssl_engine_get_session_parameters(t->eng, &p);
+    return t->offered && p.session_id_len == t->offered_len &&
+           memcmp(p.session_id, t->offered_id, t->offered_len) == 0;
+}
+
+int gtls_peer_ok(gtls_conn *t) {
+    /* A resumed session presents no chain; the peer was authenticated when the
+     * session was made (only such sessions are offered or cached) and proves
+     * it still holds the master secret by the Finished messages. */
+    int ok = !t->verify_peer || t->watch.validated || gtls_resumed(t);
+    /* Keep a session that was just made for the next connection. */
+    if (ok && !t->is_server && !t->saved && t->watch.chain_seen && t->watch.validated &&
+        t->conf && t->conf->lifetime > 0) {
+        br_ssl_session_parameters p;
+        br_ssl_engine_get_session_parameters(t->eng, &p);
+        if (p.session_id_len > 0 && p.session_id_len <= sizeof p.session_id) {
+            gtls_conf *c = t->conf;
+            pthread_mutex_lock(&c->mu);
+            c->csess = p;
+            c->have_session = 1;
+            c->ctime = now_s();
+            snprintf(c->cname, sizeof c->cname, "%s", t->sni);
+            pthread_mutex_unlock(&c->mu);
+        }
+        t->saved = 1;
+        memset(&p, 0, sizeof p);
+    }
+    return ok;
+}

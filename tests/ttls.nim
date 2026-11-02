@@ -2,6 +2,7 @@
 
 import std/[unittest, os, osproc, strutils]
 import grpc
+import grpc/tls/tls as rawtls
 import ./interop/interop
 
 const certs = currentSourcePath.parentDir / "certs"
@@ -146,3 +147,94 @@ suite "mutual TLS":
                   "localhost")
     for i in 0 ..< 20: ch.echoOnce()
     ch.close()
+
+# ---------------------------------------------------------------- resumption
+
+proc feed(t: TlsConn; data: seq[byte]) =
+  var rest = data
+  while rest.len > 0:
+    let n = t.pushRecords(rest)
+    if n == 0: break
+    rest = rest[n .. ^1]
+
+proc handshake(c, s: TlsConn) =
+  ## Runs a handshake between the two ends in memory.
+  for _ in 0 ..< 100:
+    c.feed(s.pullRecords())
+    s.feed(c.pullRecords())
+    if c.handshakeDone and s.handshakeDone: break
+
+proc connect(cc, sc: TlsConfig; name = "localhost"): tuple[c, s: TlsConn] =
+  let c = newClientTls(cc, name)
+  let s = newServerTls(sc)
+  handshake(c, s)
+  (c, s)
+
+suite "session resumption":
+  test "the second connection resumes, and checks the peer all the same":
+    let sc = tlsServerConfig(pem"server.pem", pem"server.key")
+    let cc = tlsClientConfig(pem"ca.pem")
+    let a = connect(cc, sc)
+    a.c.checkPeer(); a.s.checkPeer()
+    check not a.c.resumed and not a.s.resumed
+    let b = connect(cc, sc)
+    b.c.checkPeer(); b.s.checkPeer()
+    check b.c.resumed and b.s.resumed
+
+  test "mutual TLS resumes too":
+    let sc = tlsServerConfig(pem"server.pem", pem"server.key", clientCaPem = pem"ca.pem")
+    let cc = tlsClientConfig(pem"ca.pem", pem"client.pem", pem"client.key")
+    let a = connect(cc, sc)
+    a.c.checkPeer(); a.s.checkPeer()
+    let b = connect(cc, sc)
+    b.c.checkPeer(); b.s.checkPeer()
+    check b.c.resumed and b.s.resumed
+
+  test "a client without a certificate gets no session to resume":
+    let sc = tlsServerConfig(pem"server.pem", pem"server.key", clientCaPem = pem"ca.pem")
+    let cc = tlsClientConfig(pem"ca.pem")
+    for _ in 0 ..< 3:
+      let a = connect(cc, sc)
+      check not a.s.resumed
+      check a.s.isClosed or not a.s.handshakeDone     # refused during the handshake
+
+  test "a session of one server config is not accepted by another":
+    let cc = tlsClientConfig(pem"ca.pem")
+    let a = connect(cc, tlsServerConfig(pem"server.pem", pem"server.key"))
+    a.c.checkPeer()
+    let b = connect(cc, tlsServerConfig(pem"server.pem", pem"server.key"))
+    b.c.checkPeer(); b.s.checkPeer()
+    check not b.c.resumed and not b.s.resumed
+
+  test "lifetime 0 turns it off":
+    let sc = tlsServerConfig(pem"server.pem", pem"server.key")
+    let cc = tlsClientConfig(pem"ca.pem")
+    sc.setSessionLifetime(0)
+    cc.setSessionLifetime(0)
+    let a = connect(cc, sc)
+    a.c.checkPeer()
+    let b = connect(cc, sc)
+    check not b.c.resumed and not b.s.resumed
+
+  test "a session older than the lifetime is not resumed":
+    let sc = tlsServerConfig(pem"server.pem", pem"server.key")
+    let cc = tlsClientConfig(pem"ca.pem")
+    sc.setSessionLifetime(1)
+    cc.setSessionLifetime(1)
+    let a = connect(cc, sc)
+    a.c.checkPeer(); a.s.checkPeer()
+    check connect(cc, sc).c.resumed
+    sleep(2200)
+    let c = connect(cc, sc)
+    c.c.checkPeer(); c.s.checkPeer()
+    check not c.c.resumed and not c.s.resumed
+
+  test "calls work over resumed connections":
+    let srv = newTestServer(tls = tlsServerConfig(pem"server.pem", pem"server.key"))
+    srv.start()
+    let cfg = tlsClientConfig(pem"ca.pem")
+    for _ in 0 ..< 3:
+      let ch = dial("127.0.0.1", srv.port, cfg, "localhost")
+      ch.echoOnce()
+      ch.close()
+    srv.stop()

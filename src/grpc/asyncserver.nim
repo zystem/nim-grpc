@@ -23,7 +23,7 @@ import pkg/chronos
 import ./status, ./wire, ./h2/async, ./compress/gzip
 export status, options, async.TlsConfig, async.tlsClientConfig, async.tlsServerConfig,
        async.TlsError, async.Keepalive, async.PingPolicy, async.CipherOrder,
-       async.setCipherOrder
+       async.setCipherOrder, async.setSessionLifetime, async.defaultSessionLifetime
 
 type
   AsyncServerContext* = ref object

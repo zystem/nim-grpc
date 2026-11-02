@@ -5,7 +5,6 @@
 ## connection that owns it under that connection's lock.
 
 import std/os
-import ../bytebuf
 import bearssl/abi/[bearssl_ssl, bearssl_x509, bearssl_pem, bearssl_ec,
                     bearssl_rsa, bearssl_hash, bearssl_rand]
 
@@ -26,6 +25,7 @@ proc gtls_conf_set_identity(c: GtlsConfP; chain: ptr byte; chainLen: csize_t;
                             key: ptr byte; keyLen: csize_t): cint
 proc gtls_conf_require_client_cert(c: GtlsConfP; on: cint)
 proc gtls_conf_set_cipher_order(c: GtlsConfP; order: cint)
+proc gtls_conf_set_lifetime(c: GtlsConfP; seconds: cint)
 proc gtls_conf_free(c: GtlsConfP)
 proc gtls_client_new(c: GtlsConfP; serverName: cstring): GtlsConnP
 proc gtls_server_new(c: GtlsConfP): GtlsConnP
@@ -40,6 +40,7 @@ proc gtls_pull_app(t: GtlsConnP; data: ptr byte; cap: csize_t): csize_t
 proc gtls_close(t: GtlsConnP)
 proc gtls_alpn(t: GtlsConnP): cstring
 proc gtls_peer_ok(t: GtlsConnP): cint
+proc gtls_resumed(t: GtlsConnP): cint
 {.pop.}
 
 const
@@ -104,6 +105,18 @@ proc setCipherOrder*(c: TlsConfig; order: CipherOrder) =
   ## ChaCha20-Poly1305 elsewhere, where BearSSL's portable AES is slow.
   gtls_conf_set_cipher_order(c.raw, cint(ord(order)))
 
+const defaultSessionLifetime* = 3600
+
+proc setSessionLifetime*(c: TlsConfig; seconds: int) =
+  ## How long a TLS session may be resumed, which skips the public-key work of
+  ## a handshake (a new connection costs about half as much). A server keeps
+  ## the sessions of authenticated peers for at most this long and a client
+  ## offers the last one for the same server name for as long; 0 turns
+  ## resumption off. A resumed session is not checked against the certificate
+  ## again, so this is also how long a revoked or expired certificate still
+  ## works for a client that already has a session. Default one hour.
+  gtls_conf_set_lifetime(c.raw, cint(seconds))
+
 proc requireClientCert*(c: TlsConfig; on = true) =
   ## Server: refuse clients without a certificate that chains to a trusted CA.
   gtls_conf_require_client_cert(c.raw, cint(on))
@@ -156,6 +169,10 @@ proc errorMessage*(t: TlsConn): string =
     if e >= 512: "TLS: sent fatal alert " & $(e - 512)
     elif e >= 256: "TLS: peer sent fatal alert " & $(e - 256)
     else: "TLS error " & $e
+
+proc resumed*(t: TlsConn): bool =
+  ## After the handshake: the session was resumed, not made afresh.
+  gtls_resumed(t.raw) != 0
 
 proc handshakeDone*(t: TlsConn): bool = (gtls_state(t.raw) and stSendApp) != 0
 

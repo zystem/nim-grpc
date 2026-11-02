@@ -15,7 +15,7 @@ import std/[strutils, locks]
 import ./status, ./wire, ./h2/blocking, ./compress/gzip, ./cleanup
 export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig,
        blocking.TlsError, blocking.Keepalive, blocking.CipherOrder,
-       blocking.setCipherOrder
+       blocking.setCipherOrder, blocking.setSessionLifetime, blocking.defaultSessionLifetime
 
 const userAgent = "grpc-nim/0.0.1"
 
