@@ -93,7 +93,7 @@ proc recv*(call: AsyncServerCall): Future[Option[seq[byte]]] {.async.} =
       else:
         msg = move payload
       call.ctx.requestCompressed = compressed
-      return some(msg)
+      return some(move msg)
     if call.inEnded:
       if call.msgs.leftover > 0:
         raise newGrpcError(scInternal, "truncated message at end of stream")
@@ -123,25 +123,40 @@ proc sendResponseHeaders(call: AsyncServerCall) =
   if err != nil: raise err
   call.headersSent = true
 
-proc send*(call: AsyncServerCall; msg: seq[byte]; compressed: bool) {.async.} =
-  ## Sends one message, compressed if `compressed` and the response uses gzip
-  ## (`ctx.responseCompression`, accepted by the client); otherwise plain.
-  call.sendResponseHeaders()
-  let framed = if compressed and call.gzipOut:
-                 encodeMessage(gzipCompress(msg), compressed = true)
-               else: encodeMessage(msg)
+proc finishSend(call: AsyncServerCall; job: SendJob) {.async.} =
   var err: ref GrpcError
   try:
-    await call.st.send(framed)
+    await call.st.finish(job)
   except H2Error as e:
     err = e.toGrpc
   if err != nil: raise err
 
-proc send*(call: AsyncServerCall; msg: seq[byte]) {.async.} =
+proc failed(e: ref CatchableError): Future[void] =
+  result = newFuture[void]("grpc.send")
+  result.fail(e)
+
+proc send*(call: AsyncServerCall; msg: sink seq[byte]; compressed: bool): Future[void] =
+  ## Sends one message, compressed if `compressed` and the response uses gzip
+  ## (`ctx.responseCompression`, accepted by the client); otherwise plain.
+  ## The message is handed to the connection without a copy.
+  try:
+    call.sendResponseHeaders()
+    var body = if compressed and call.gzipOut: gzipCompress(msg) else: move msg
+    let head = frameHeader(body.len, compressed and call.gzipOut)
+    let job = try: call.st.push(body, head)
+              except H2Error as e: raise e.toGrpc
+    if job == nil: completed() else: call.finishSend(job)
+  except GrpcError as e:
+    failed(e)
+
+proc send*(call: AsyncServerCall; msg: sink seq[byte]): Future[void] =
   ## Sends one message; the initial metadata (`ctx.headers`) goes out first.
   ## Compressed when the response uses gzip (see `ctx.responseCompression`).
-  call.sendResponseHeaders()
-  await call.send(msg, call.gzipOut)
+  try:
+    call.sendResponseHeaders()
+  except GrpcError as e:
+    return failed(e)
+  call.send(msg, call.gzipOut)
 
 proc isCancelled*(call: AsyncServerCall): bool =
   ## True once the client has gone away or reset the call.
@@ -187,13 +202,16 @@ proc finishCall(call: AsyncServerCall; code: StatusCode; msg: string; md: Metada
 proc runMethod(m: Method; ctx: AsyncServerContext; call: AsyncServerCall) {.async.} =
   case m.kind
   of mkUnary:
-    let req = await call.recv()
-    if req.isNone:
+    let rf = call.recv()
+    discard await rf
+    if rf.read.isNone:
       raise newGrpcError(scUnimplemented, "unary call without a request message")
+    var req = move rf.internalValue.get         # the future is not read again
     if (await call.recv()).isSome:
       raise newGrpcError(scUnimplemented, "unary call with more than one request message")
-    let reply = await m.unary(ctx, req.get)
-    await call.send(reply)
+    let uf = m.unary(ctx, move req)
+    discard await uf
+    await call.send(move uf.internalValue)
   of mkStreaming:
     await m.streaming(ctx, call)
 

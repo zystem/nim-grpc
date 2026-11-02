@@ -453,26 +453,70 @@ proc waitClosed*(st: AsyncH2Stream; ms: int): Future[bool] {.async.} =
     discard await withTimeout(st.changed(), left)
   true
 
-proc send*(st: AsyncH2Stream; data: seq[byte]; endStream = false) {.async.} =
-  ## Queues body bytes, waiting while the stream's unsent buffer is full.
+type
+  SendJob* = ref object
+    ## A body that did not fit into the stream's buffer yet.
+    head, data: seq[byte]
+    off: int
+    endStream: bool
+
+proc pushSome(st: AsyncH2Stream; head, data: openArray[byte]; off: var int;
+              endStream: bool): bool =
+  ## Queues as much of `head` then `data` (from `off` on) as the stream's
+  ## buffer has room for; true once everything is queued.
   let c = st.conn
+  st.checkGone()
+  if st.outEnded: raise newException(H2Error, "stream " & $st.id & ": body already ended")
+  let room = maxStreamBuffer - c.sess.buffered(st.id)
+  let total = head.len + data.len
+  let remaining = total - off
+  if room <= 0 and remaining > 0: return false
+  let n = min(max(room, 0), remaining)
+  let last = n == remaining
+  if n > 0 or (last and endStream):
+    let h0 = min(off, head.len)
+    let h1 = min(off + n, head.len)
+    let d0 = max(off - head.len, 0)
+    let d1 = max(off + n - head.len, 0)
+    c.sess.sendData(st.id, head.toOpenArray(h0, h1 - 1), data.toOpenArray(d0, d1 - 1),
+                    endStream = last and endStream)
+    off += n
+    if last and endStream: st.outEnded = true
+    c.queueOutput()
+  last
+
+proc push*(st: AsyncH2Stream; data: var seq[byte]; head: openArray[byte] = [];
+           endStream = false): SendJob =
+  ## Queues `head` then `data` without a copy of `data`. Returns nil when it
+  ## all fitted; otherwise a job for `finish`, which now owns `data` (moved
+  ## out of the argument). Raises H2Error if the stream is gone.
   var off = 0
+  if st.pushSome(head, data, off, endStream): return nil
+  SendJob(head: @head, data: move data, off: off, endStream: endStream)
+
+proc finish*(st: AsyncH2Stream; job: SendJob) {.async.} =
+  ## Waits for room and queues the rest of a body `push` left over.
   while true:
-    st.checkGone()
-    if st.outEnded: raise newException(H2Error, "stream " & $st.id & ": body already ended")
-    let room = maxStreamBuffer - c.sess.buffered(st.id)
-    let remaining = data.len - off
-    if room > 0 or remaining == 0:
-      let n = min(max(room, 0), remaining)
-      let last = n == remaining
-      if n > 0 or (last and endStream):
-        c.sess.sendData(st.id, data.toOpenArray(off, off + n - 1),
-                        endStream = last and endStream)
-        off += n
-        if last and endStream: st.outEnded = true
-        c.queueOutput()
-      if last: return
     await st.changed(room = true)
+    if st.pushSome(job.head, job.data, job.off, job.endStream): return
+
+proc completed*(): Future[void] =
+  ## An already finished future, for a call that had nothing to wait for.
+  result = newFuture[void]("h2.completed")
+  result.complete()
+
+proc send*(st: AsyncH2Stream; data: sink seq[byte]; endStream = false;
+           head: openArray[byte] = []): Future[void] =
+  ## Queues body bytes, waiting while the stream's unsent buffer is full.
+  ## `head` goes in front of `data`. Pass a value you no longer need (or
+  ## `move` it) and it is not copied.
+  var d = data
+  try:
+    let job = st.push(d, head, endStream)
+    result = if job == nil: completed() else: st.finish(job)
+  except CatchableError as e:
+    result = newFuture[void]("h2.send")
+    result.fail(e)
 
 proc recvData*(st: AsyncH2Stream): Future[seq[byte]] {.async.} =
   ## The next part of the body; empty at its end.
@@ -630,6 +674,13 @@ proc finishHandler(c: AsyncH2Conn; st: AsyncH2Stream) =
   if not st.outEnded and not st.closed and not c.closed:
     try:
       c.sess.resetStream(st.id, INTERNAL_ERROR)
+      c.queueOutput()
+    except CatchableError: discard
+  elif st.outEnded and not st.inEnded and not st.closed and not c.closed:
+    # The response is complete but the client is still sending: tell it to
+    # stop (as other gRPC servers do), or it waits for room that never comes.
+    try:
+      c.sess.resetStream(st.id, NO_ERROR)
       c.queueOutput()
     except CatchableError: discard
   st.closed = true

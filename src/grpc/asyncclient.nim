@@ -242,25 +242,41 @@ proc serverStatus(call: AsyncCall): ref GrpcError =
   except CatchableError: return nil
   if result == nil: result = newGrpcError(scInternal, "server ended the call early with OK")
 
-proc send*(call: AsyncCall; msg: seq[byte]; compressed: bool) {.async.} =
-  ## Sends one message, compressed or not. Compressing needs a call opened
-  ## with `compression = "gzip"`. If the server has already ended the call,
-  ## raises its status (GrpcError).
-  if call.cancelled: raise newGrpcError(scCancelled, "call cancelled")
-  if call.ended: raise newGrpcError(scInternal, "send after the call ended")
-  if compressed and not call.gzipOut:
-    raise newGrpcError(scInternal, "a compressed message needs compression = \"gzip\" on the call")
-  let framed = if compressed: encodeMessage(gzipCompress(msg), compressed = true)
-               else: encodeMessage(msg)
+proc finishSend(call: AsyncCall; job: SendJob) {.async.} =
   var err: ref GrpcError
   try:
-    await call.st.send(framed)
+    await call.st.finish(job)
   except H2Error as e:
     err = call.serverStatus()
     if err == nil: err = call.mapped(e)
   if err != nil: raise err
 
-proc send*(call: AsyncCall; msg: seq[byte]): Future[void] =
+proc failedSend(e: ref CatchableError): Future[void] =
+  result = newFuture[void]("grpc.send")
+  result.fail(e)
+
+proc send*(call: AsyncCall; msg: sink seq[byte]; compressed: bool): Future[void] =
+  ## Sends one message, compressed or not. Compressing needs a call opened
+  ## with `compression = "gzip"`. If the server has already ended the call,
+  ## raises its status (GrpcError). The message is handed to the connection
+  ## without a copy.
+  try:
+    if call.cancelled: raise newGrpcError(scCancelled, "call cancelled")
+    if call.ended: raise newGrpcError(scInternal, "send after the call ended")
+    if compressed and not call.gzipOut:
+      raise newGrpcError(scInternal, "a compressed message needs compression = \"gzip\" on the call")
+    var body = if compressed: gzipCompress(msg) else: move msg
+    let head = frameHeader(body.len, compressed)
+    let job = try: call.st.push(body, head)
+              except H2Error as e:
+                var err = call.serverStatus()
+                if err == nil: err = call.mapped(e)
+                raise err
+    if job == nil: completed() else: call.finishSend(job)
+  except GrpcError as e:
+    failedSend(e)
+
+proc send*(call: AsyncCall; msg: sink seq[byte]): Future[void] =
   ## Sends one message, compressed if the call was opened with compression.
   call.send(msg, call.gzipOut)
 
@@ -296,7 +312,8 @@ proc recv*(call: AsyncCall): Future[Option[seq[byte]]] {.async.} =
         else:
           msg = move payload
         call.lastCompressed = compressed
-        return some(msg)
+        result = some(move msg)
+        return
       var chunk = await call.st.recvData()
       if chunk.len > 0:
         call.msgs.feed(chunk)
@@ -321,18 +338,18 @@ proc unaryCall*(ch: AsyncChannel; path: string; request: seq[byte];
   ## status other than OK.
   let call = await ch.newCall(path, metadata, timeoutMs, maxMessage, compression)
   var err: ref CatchableError
-  var res: UnaryResult
   try:
     await call.send(request)
     await call.closeSend()
-    let m = await call.recv()
-    if m.isNone:
+    let rf = call.recv()
+    discard await rf
+    if rf.read.isNone:
       raise newGrpcError(scInternal, "unary call ended without a response")
-    res.message = m.get
+    result.message = move rf.internalValue.get       # the future is not read again
     if (await call.recv()).isSome:
       raise newGrpcError(scInternal, "unary call got more than one response")
-    res.headers = call.headers
-    res.trailers = call.trailers
+    result.headers = call.headers
+    result.trailers = call.trailers
   except CancelledError as e:
     call.close()
     raise e
@@ -340,4 +357,3 @@ proc unaryCall*(ch: AsyncChannel; path: string; request: seq[byte];
     err = e
   call.close()
   if err != nil: raise err
-  res

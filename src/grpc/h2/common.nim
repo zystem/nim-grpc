@@ -33,6 +33,7 @@ const
   readChunk* = 16 * 1024
   maxOutQueue* = 256 * 1024        ## bytes framed and waiting for the socket
   maxStreamBuffer* = 256 * 1024    ## unsent body bytes per stream before send waits
+  NO_ERROR* = 0'u32
   INTERNAL_ERROR* = 2'u32
   CANCEL* = 8'u32
   ENHANCE_YOUR_CALM* = 11'u32

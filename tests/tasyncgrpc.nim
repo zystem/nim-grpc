@@ -69,8 +69,21 @@ proc flood(ctx: AsyncServerContext; call: AsyncServerCall) {.async.} =
   for i in 0 ..< n:
     await call.send(newSeq[byte](1024))
 
+proc rawEcho(ctx: AsyncServerContext; req: seq[byte]): Future[seq[byte]] {.async.} =
+  return req
+
+proc refuse(ctx: AsyncServerContext; call: AsyncServerCall) {.async.} =
+  ## Ends the call at once, without reading the request.
+  raise newGrpcError(scResourceExhausted, "no")
+
+proc pattern(n, seed: int): seq[byte] =
+  result = newSeq[byte](n)
+  for i in 0 ..< n: result[i] = byte((i * 31 + seed) and 0xff)
+
 proc newTestServer(): AsyncGrpcServer =
-  result = newAsyncGrpcServer()
+  result = newAsyncGrpcServer(maxMessage = 16 * 1024 * 1024)
+  result.addUnary("/t.S/Raw", rawEcho)
+  result.addStreaming("/t.S/Refuse", refuse)
   result.addUnary("/t.S/Echo", echoUnary)
   result.addStreaming("/t.S/Counter", counter)
   result.addStreaming("/t.S/Flood", flood)
@@ -166,6 +179,52 @@ suite "async gRPC":
       ck (await call.recv()).get.toStr == "GZIP"
       ck call.lastCompressed
       ck (await call.recv()).isNone
+      call.close()
+      await ch.close()
+    run go(srv)
+
+  test "messages larger than the stream buffer, alone and side by side":
+    proc one(ch: AsyncChannel; n, seed: int) {.async.} =
+      let want = pattern(n, seed)
+      let got = await ch.unaryCall("/t.S/Raw", want, maxMessage = 16 * 1024 * 1024)
+      ck got.message == want
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      await one(ch, 0, 1)
+      await one(ch, 1, 2)
+      await one(ch, 256 * 1024 - 5, 3)     # just under, exactly at and over the buffer
+      await one(ch, 256 * 1024, 4)
+      await one(ch, 256 * 1024 + 1, 5)
+      await one(ch, 3 * 1024 * 1024 + 7, 6)
+      var fs: seq[Future[void]]
+      for i in 0 ..< 8: fs.add one(ch, 300_000 + i * 250_001, 10 + i)
+      await allFutures(fs)
+      await ch.close()
+    run go(srv)
+
+  test "a large compressed message in both directions":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Raw", compression = "gzip",
+                                  maxMessage = 16 * 1024 * 1024)
+      let want = newSeq[byte](2 * 1024 * 1024)      # compresses well
+      await call.send(want)
+      await call.closeSend()
+      ck (await call.recv()).get == want
+      ck call.lastCompressed == false or call.lastCompressed    # the server decides
+      call.close()
+      await ch.close()
+    run go(srv)
+
+  test "sending a large message to a call the server has already ended":
+    proc go(srv: AsyncGrpcServer) {.async.} =
+      let ch = await dialAsync("127.0.0.1", srv.port)
+      let call = await ch.newCall("/t.S/Refuse")
+      expectStatus scResourceExhausted:
+        for _ in 0 ..< 4:
+          await call.send(newSeq[byte](1024 * 1024))
+        await call.closeSend()
+        discard await call.recv()
       call.close()
       await ch.close()
     run go(srv)
