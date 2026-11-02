@@ -202,7 +202,8 @@ proc runHandler(c: AsyncH2Conn; st: AsyncH2Stream) {.async: (raises: []).}
 
 proc handleEvents(c: AsyncH2Conn) =
   let isServer = c.server != nil
-  for ev in c.sess.takeEvents():
+  var events = c.sess.takeEvents()
+  for ev in events.mitems:
     let st = c.streams.getOrDefault(ev.streamId)
     case ev.kind
     of evHeaders:
@@ -218,7 +219,8 @@ proc handleEvents(c: AsyncH2Conn) =
         ns.handler = c.runHandler(ns)
     of evData:
       if st != nil and not st.released:
-        st.inbuf.appendBytes ev.data
+        if st.inbuf.len == 0: st.inbuf = move ev.data     # no copy
+        else: st.inbuf.appendBytes ev.data
         if ev.dataEndStream: st.inEnded = true
         st.notify()
       else:

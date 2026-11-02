@@ -280,7 +280,8 @@ proc dispatchLocked(c: ptr ConnObj; id: int32; headers: seq[Header]) =
 
 proc handleEventsLocked(c: ptr ConnObj) =
   let isServer = c.server != nil
-  for ev in c.sess.takeEvents():
+  var events = c.sess.takeEvents()
+  for ev in events.mitems:
     let known = ev.streamId in c.streams
     case ev.kind
     of evHeaders:
@@ -295,7 +296,8 @@ proc handleEventsLocked(c: ptr ConnObj) =
     of evData:
       if known:
         let st = c.streamPtr(ev.streamId)
-        st.inbuf.appendBytes ev.data
+        if st.inbuf.len == 0: st.inbuf = move ev.data     # no copy
+        else: st.inbuf.appendBytes ev.data
         if ev.dataEndStream: st.inEnded = true
     of evStreamClosed:
       if known:
@@ -575,21 +577,27 @@ proc timeoutLocked(c: ptr ConnObj; id: int32): ref H2Timeout =
     c.streamPtr(id).errorCode = CANCEL
   newException(H2Timeout, "deadline exceeded on stream " & $id)
 
-proc sendLocked(c: ptr ConnObj; id: int32; data: openArray[byte]; endStream: bool;
+proc sendLocked(c: ptr ConnObj; id: int32; head, data: openArray[byte]; endStream: bool;
                 hasDeadline: bool; deadline: Timespec) =
-  ## Queues body bytes, waiting while the stream's unsent buffer is full.
+  ## Queues body bytes (`head` then `data`), waiting while the stream's unsent
+  ## buffer is full.
   var off = 0
+  let total = head.len + data.len
   while true:
     let s = c.streamPtr(id)          # re-read: the table may grow while we wait
     if s == nil or s.closed or c.closed: raise c.closedError(s, id)
     if s.outEnded: raise newException(H2Error, "stream " & $id & ": body already ended")
     let room = maxStreamBuffer - c.sess.buffered(id)
-    let remaining = data.len - off
+    let remaining = total - off
     if room > 0 or remaining == 0:
       let n = min(max(room, 0), remaining)
       let last = n == remaining
       if n > 0 or (last and endStream):
-        c.sess.sendData(id, data.toOpenArray(off, off + n - 1),
+        let h0 = min(off, head.len)
+        let h1 = min(off + n, head.len)
+        let d0 = max(off - head.len, 0)
+        let d1 = max(off + n - head.len, 0)
+        c.sess.sendData(id, head.toOpenArray(h0, h1 - 1), data.toOpenArray(d0, d1 - 1),
                         endStream = last and endStream)
         off += n
         if last and endStream: s.outEnded = true
@@ -696,11 +704,13 @@ proc sendHeaders*(st: var ServerStream; headers: openArray[Header]; endStream = 
   finally:
     release(c.lock)
 
-proc sendData*(st: var ServerStream; data: openArray[byte]; endStream = false) =
+proc sendData*(st: var ServerStream; data: openArray[byte]; endStream = false;
+               head: openArray[byte] = []) =
+  ## Queues `head` then `data` as body bytes.
   let c = st.conn
   acquire(c.lock)
   try:
-    c.sendLocked(st.id, data, endStream, st.hasDeadline, st.deadline)
+    c.sendLocked(st.id, head, data, endStream, st.hasDeadline, st.deadline)
   finally:
     release(c.lock)
 
@@ -980,11 +990,13 @@ proc openStream*(c: Conn; headers: openArray[Header]; timeoutMs = -1): ClientStr
   finally:
     release(c.lock)
 
-proc send*(st: var ClientStream; data: openArray[byte]; endStream = false) =
+proc send*(st: var ClientStream; data: openArray[byte]; endStream = false;
+           head: openArray[byte] = []) =
+  ## Queues `head` then `data` as body bytes.
   let c = st.conn
   acquire(c.lock)
   try:
-    c.sendLocked(st.id, data, endStream, st.hasDeadline, st.deadline)
+    c.sendLocked(st.id, head, data, endStream, st.hasDeadline, st.deadline)
   finally:
     release(c.lock)
 

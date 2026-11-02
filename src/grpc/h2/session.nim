@@ -309,13 +309,20 @@ proc wake(s: H2Session; streamId: int32; o: OutStream) =
     o.deferred = false
     discard nghttp2_session_resume_data(s.raw, streamId)
 
-proc sendData*(s: H2Session; streamId: int32; data: openArray[byte];
+proc sendData*(s: H2Session; streamId: int32; head, data: openArray[byte];
                endStream = false) =
-  ## Queues body bytes; nghttp2 frames them subject to flow control.
+  ## Queues body bytes (`head` then `data`, so a caller can put a message
+  ## prefix in front without copying the message); nghttp2 frames them subject
+  ## to flow control.
   let o = s.outStream(streamId)
+  o.buf.appendBytes head
   o.buf.appendBytes data
   if endStream: o.eof = true
   s.wake(streamId, o)
+
+proc sendData*(s: H2Session; streamId: int32; data: openArray[byte];
+               endStream = false) =
+  s.sendData(streamId, [], data, endStream)
 
 proc sendTrailers*(s: H2Session; streamId: int32; trailers: openArray[Header]) =
   ## Ends the body and closes the stream with a trailing HEADERS block.

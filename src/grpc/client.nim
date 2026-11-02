@@ -39,8 +39,7 @@ type
 
   ClientCall* = object
     st: ClientStream
-    buf: seq[byte]          ## received bytes not yet decoded
-    pos: int
+    msgs: MsgBuf                  ## received bytes not yet decoded
     gotHeaders: bool
     rawHeaders: seq[Header]
     ended: bool             ## the status has been read
@@ -267,10 +266,13 @@ proc send*(call: var ClientCall; msg: openArray[byte]; compressed: bool) =
   if call.ended: raise newGrpcError(scInternal, "send after the call ended")
   if compressed and not call.gzipOut:
     raise newGrpcError(scInternal, "a compressed message needs compression = \"gzip\" on the call")
-  let framed = if compressed: encodeMessage(gzipCompress(msg), compressed = true)
-               else: encodeMessage(msg)
-  call.mapErrors:
-    call.st.send(framed)
+  if compressed:
+    let z = gzipCompress(msg)
+    call.mapErrors:
+      call.st.send(z, head = frameHeader(z.len, true))
+  else:
+    call.mapErrors:
+      call.st.send(msg, head = frameHeader(msg.len))
 
 proc send*(call: var ClientCall; msg: openArray[byte]) =
   ## Sends one message, compressed if the call was opened with compression.
@@ -294,7 +296,7 @@ proc recv*(call: var ClientCall; msg: var seq[byte]): bool =
       var compressed = false
       var bad: ref GrpcError
       try:
-        if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+        if call.msgs.take(call.maxMessage, payload, compressed):
           if compressed:
             if call.respEncoding != "gzip":
               raise newGrpcError(scInternal, "compressed message with grpc-encoding " &
@@ -311,9 +313,9 @@ proc recv*(call: var ClientCall; msg: var seq[byte]): bool =
         raise bad
       var chunk: seq[byte]
       if call.st.recvData(chunk):
-        call.buf.appendData(call.pos, chunk)
+        call.msgs.feed(chunk)
       else:
-        if call.buf.len - call.pos > 0:
+        if call.msgs.leftover > 0:
           call.fail(scInternal, "truncated message at end of stream")
         break
     call.finish()

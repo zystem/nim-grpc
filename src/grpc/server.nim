@@ -34,8 +34,7 @@ type
   ServerCall* = object
     st: ptr ServerStream
     ctx: ptr ServerContext
-    buf: seq[byte]
-    pos: int
+    msgs: MsgBuf                  ## received bytes not yet decoded
     inEnded: bool
     headersSent: bool
     maxMessage: int
@@ -87,7 +86,7 @@ proc recv*(call: var ServerCall; msg: var seq[byte]): bool =
   while true:
     var payload: seq[byte]
     var compressed = false
-    if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+    if call.msgs.take(call.maxMessage, payload, compressed):
       if compressed:
         if call.reqEncoding != "gzip":
           raise newGrpcError(scInternal, "compressed message with grpc-encoding " &
@@ -98,7 +97,7 @@ proc recv*(call: var ServerCall; msg: var seq[byte]): bool =
       call.ctx.requestCompressed = compressed
       return true
     if call.inEnded:
-      if call.buf.len - call.pos > 0:
+      if call.msgs.leftover > 0:
         raise newGrpcError(scInternal, "truncated message at end of stream")
       return false
     var chunk: seq[byte]
@@ -109,7 +108,7 @@ proc recv*(call: var ServerCall; msg: var seq[byte]): bool =
     except H2Error as e:
       err = e.toGrpc       # raised outside the except block (see threadBody)
     if err != nil: raise err
-    if more: call.buf.appendData(call.pos, chunk)
+    if more: call.msgs.feed(chunk)
     else: call.inEnded = true
 
 proc sendResponseHeaders(call: var ServerCall) =
@@ -131,12 +130,13 @@ proc send*(call: var ServerCall; msg: openArray[byte]; compressed: bool) =
   ## Sends one message, compressed if `compressed` and the response uses gzip
   ## (`ctx.responseCompression`, accepted by the client); otherwise plain.
   call.sendResponseHeaders()
-  let framed = if compressed and call.gzipOut:
-                 encodeMessage(gzipCompress(msg), compressed = true)
-               else: encodeMessage(msg)
   var err: ref GrpcError
   try:
-    call.st[].sendData(framed)
+    if compressed and call.gzipOut:
+      let z = gzipCompress(msg)
+      call.st[].sendData(z, head = frameHeader(z.len, true))
+    else:
+      call.st[].sendData(msg, head = frameHeader(msg.len))
   except H2Error as e:
     err = e.toGrpc
   if err != nil: raise err

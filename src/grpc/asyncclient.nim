@@ -35,8 +35,7 @@ type
 
   AsyncCall* = ref object
     st: AsyncH2Stream
-    buf: seq[byte]                ## received bytes not yet decoded
-    pos: int
+    msgs: MsgBuf                  ## received bytes not yet decoded
     gotHeaders: bool
     rawHeaders: seq[Header]
     ended: bool                   ## the status has been read
@@ -287,7 +286,7 @@ proc recv*(call: AsyncCall): Future[Option[seq[byte]]] {.async.} =
     while true:
       var payload: seq[byte]
       var compressed = false
-      if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+      if call.msgs.take(call.maxMessage, payload, compressed):
         var msg: seq[byte]
         if compressed:
           if call.respEncoding != "gzip":
@@ -298,11 +297,11 @@ proc recv*(call: AsyncCall): Future[Option[seq[byte]]] {.async.} =
           msg = move payload
         call.lastCompressed = compressed
         return some(msg)
-      let chunk = await call.st.recvData()
+      var chunk = await call.st.recvData()
       if chunk.len > 0:
-        call.buf.appendData(call.pos, chunk)
+        call.msgs.feed(chunk)
       else:
-        if call.buf.len - call.pos > 0:
+        if call.msgs.leftover > 0:
           raise call.failure(scInternal, "truncated message at end of stream")
         break
     await call.finish()

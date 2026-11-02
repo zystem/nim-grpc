@@ -41,8 +41,7 @@ type
   AsyncServerCall* = ref object
     st: AsyncH2Stream
     ctx: AsyncServerContext
-    buf: seq[byte]
-    pos: int
+    msgs: MsgBuf                  ## received bytes not yet decoded
     inEnded: bool
     headersSent: bool
     maxMessage: int
@@ -84,7 +83,7 @@ proc recv*(call: AsyncServerCall): Future[Option[seq[byte]]] {.async.} =
   while true:
     var payload: seq[byte]
     var compressed = false
-    if takeFrame(call.buf, call.pos, call.maxMessage, payload, compressed):
+    if call.msgs.take(call.maxMessage, payload, compressed):
       var msg: seq[byte]
       if compressed:
         if call.reqEncoding != "gzip":
@@ -96,7 +95,7 @@ proc recv*(call: AsyncServerCall): Future[Option[seq[byte]]] {.async.} =
       call.ctx.requestCompressed = compressed
       return some(msg)
     if call.inEnded:
-      if call.buf.len - call.pos > 0:
+      if call.msgs.leftover > 0:
         raise newGrpcError(scInternal, "truncated message at end of stream")
       return none(seq[byte])
     var chunk: seq[byte]
@@ -106,7 +105,7 @@ proc recv*(call: AsyncServerCall): Future[Option[seq[byte]]] {.async.} =
     except H2Error as e:
       err = e.toGrpc
     if err != nil: raise err
-    if chunk.len > 0: call.buf.appendData(call.pos, chunk)
+    if chunk.len > 0: call.msgs.feed(chunk)
     else: call.inEnded = true
 
 proc sendResponseHeaders(call: AsyncServerCall) =

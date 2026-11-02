@@ -44,38 +44,84 @@ proc decodeMessages*(body: openArray[byte]; maxLen = defaultMaxMessage): seq[seq
     result.add @(body.toOpenArray(i + 5, i + 4 + n))
     i += 5 + n
 
-proc takeFrame*(buf: var seq[byte]; pos: var int; maxLen: int;
-                payload: var seq[byte]; compressed: var bool): bool =
-  ## Takes the next complete message frame from `buf[pos..]`, if there is
-  ## one, advancing `pos` and compacting `buf` once all of it is consumed.
-  ## Raises GrpcError for a bad flag (INTERNAL) or a declared length above
-  ## `maxLen` (RESOURCE_EXHAUSTED).
-  let avail = buf.len - pos
-  if avail < 5: return false
-  let flag = buf[pos]
-  if flag > 1: raise newGrpcError(scInternal, "invalid message flag " & $flag)
-  let n = (buf[pos+1].int shl 24) or (buf[pos+2].int shl 16) or
-          (buf[pos+3].int shl 8) or buf[pos+4].int
-  if n > maxLen:
-    raise newGrpcError(scResourceExhausted,
-      "message of " & $n & " bytes exceeds the limit of " & $maxLen)
-  if avail < 5 + n: return false
-  payload = sliceBytes(buf, pos + 5, n)
-  compressed = flag == 1
-  pos += 5 + n
-  if pos == buf.len:
-    buf.setLen(0)
-    pos = 0
-  true
+type
+  MsgBuf* = object
+    ## Reassembles message frames from the chunks of a body. A chunk is kept as
+    ## it came (no copy) and its bytes go straight into the message being
+    ## built, which grows only as data arrives, so a declared length alone
+    ## reserves nothing.
+    pending: seq[byte]          ## the last chunk fed ...
+    ppos: int                   ## ... of which this much is used
+    hdr: array[5, byte]
+    hdrLen: int
+    inBody: bool
+    flag: byte
+    need: int                   ## length of the message being built
+    payload: seq[byte]
 
-proc appendData*(buf: var seq[byte]; pos: var int; chunk: openArray[byte]) =
-  ## Appends received bytes, dropping the consumed prefix first.
-  if pos > 0:
-    let rest = buf.len - pos
-    moveMem(buf[0].addr, buf[pos].addr, rest)
-    buf.setLen(rest)
-    pos = 0
-  buf.appendBytes chunk
+proc feed*(m: var MsgBuf; chunk: var seq[byte]) =
+  ## Hands over the next received bytes; `chunk` is left empty. Take every
+  ## complete message (`take` until false) before feeding more.
+  if chunk.len == 0: return
+  if m.ppos >= m.pending.len:
+    m.pending = move chunk
+    m.ppos = 0
+  else:                          # not taken yet: keep order
+    m.pending = m.pending[m.ppos .. ^1]
+    m.ppos = 0
+    m.pending.appendBytes chunk
+  chunk = @[]
+
+proc leftover*(m: MsgBuf): int =
+  ## Bytes received that do not make a whole message yet.
+  (m.pending.len - m.ppos) + (if m.inBody: 5 + m.payload.len else: m.hdrLen)
+
+proc take*(m: var MsgBuf; maxLen: int; payload: var seq[byte];
+           compressed: var bool): bool =
+  ## Takes the next complete message, if there is one. Raises GrpcError for a
+  ## bad flag (INTERNAL) or a declared length above `maxLen`
+  ## (RESOURCE_EXHAUSTED).
+  while true:
+    if not m.inBody:
+      while m.hdrLen < 5 and m.ppos < m.pending.len:
+        m.hdr[m.hdrLen] = m.pending[m.ppos]
+        inc m.hdrLen
+        inc m.ppos
+      if m.hdrLen < 5:
+        m.pending = @[]
+        m.ppos = 0
+        return false
+      let flag = m.hdr[0]
+      if flag > 1: raise newGrpcError(scInternal, "invalid message flag " & $flag)
+      let n = (m.hdr[1].int shl 24) or (m.hdr[2].int shl 16) or
+              (m.hdr[3].int shl 8) or m.hdr[4].int
+      if n > maxLen:
+        raise newGrpcError(scResourceExhausted,
+          "message of " & $n & " bytes exceeds the limit of " & $maxLen)
+      m.inBody = true
+      m.flag = flag
+      m.need = n
+      m.payload = newSeqOfCap[byte](min(n, 65536))
+    let k = min(m.need - m.payload.len, m.pending.len - m.ppos)
+    if k > 0:
+      m.payload.appendBytes(m.pending[m.ppos].addr, k)
+      m.ppos += k
+    if m.ppos >= m.pending.len:
+      m.pending = @[]
+      m.ppos = 0
+    if m.payload.len == m.need:
+      payload = move m.payload
+      compressed = m.flag == 1
+      m.payload = @[]
+      m.inBody = false
+      m.hdrLen = 0
+      return true
+    return false
+
+proc frameHeader*(len: int; compressed = false): array[5, byte] =
+  ## The 5 bytes in front of a message of `len` bytes.
+  let n = len.uint32
+  [byte(ord(compressed)), byte(n shr 24), byte(n shr 16), byte(n shr 8), byte(n)]
 
 const supportedEncodings* = ["identity", "gzip"]
 const acceptEncodingHeader* = ("grpc-accept-encoding", "gzip")
