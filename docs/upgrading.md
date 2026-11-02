@@ -2,9 +2,13 @@
 
 The latest release is supported ([SECURITY.md](../SECURITY.md)). Read the notes below and in [CHANGELOG.md](../CHANGELOG.md) before upgrading.
 
-General steps: update the package (`nimble install grpc@X.Y.Z` or the new commit); rebuild nghttp2 if [building.md](building.md) names a new version; regenerate the code of your `.proto` files with the new `protoc-gen-nim` (generated code and the library are versioned together); run your tests.
+General steps: update the package (`nimble install nimgrpc@X.Y.Z` or the new commit); rebuild nghttp2 if [building.md](building.md) names a new version; regenerate the code of your `.proto` files with the new `protoc-gen-nim` (generated code and the library are versioned together); run your tests.
 
 ## Unreleased
+
+## 0.0.3
+
+- **The package is called `nimgrpc`** (the name `grpc` in the nimble directory belongs to another project). Install with `nimble install nimgrpc`, and in a `.nimble` file write `requires "nimgrpc >= 0.0.3"`. The modules keep their names: `import grpc/...` is unchanged, so a program cannot have this package and the other `grpc` package in one build. Nothing else changes in the code.
 
 ## 0.0.2
 

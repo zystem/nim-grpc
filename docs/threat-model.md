@@ -20,7 +20,7 @@ nim-grpc is a library: it runs inside the program of its user, as a gRPC client,
 | A slow or stalled peer | open streams, unread data | per-stream and per-connection flow control (1 MiB each; on the chronos adapter the window reopens only as data is read), keepalive pings and their policy, deadlines (`grpc-timeout`), graceful shutdown | the number of concurrent streams is nghttp2's default; set a limit in the program if it matters |
 | A misbehaving server, client side | replies | message limit, deadlines, cancellation, GOAWAY handling, reconnect with backoff | none known |
 | A malicious `.proto` file | `protoc-gen-nim` input | the plugin runs at build time on files the developer chose; it writes Nim source | do not run it on proto files you do not trust, as with any code generator |
-| A malicious dependency | nimble packages (`bearssl`, `chronos` and theirs) | few dependencies, pinned by minimum version in `grpc.nimble`; see [security-policies.md](security-policies.md) | nimble has no lock file here; the user's program decides the exact versions |
+| A malicious dependency | nimble packages (`bearssl`, `chronos` and theirs) | few dependencies, pinned by minimum version in `nimgrpc.nimble`; see [security-policies.md](security-policies.md) | nimble has no lock file here; the user's program decides the exact versions |
 
 ## Out of scope
 

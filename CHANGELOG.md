@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.0.3 — 2026-11-03
+
+### Changed
+- The nimble package is now `nimgrpc` (`nimgrpc.nimble`), so that it can be listed in the nimble directory, where `grpc` is taken. The modules are still `grpc/...`. See [docs/upgrading.md](docs/upgrading.md).
+
 ## 0.0.2 — 2026-11-03
 
 ### Added
@@ -12,7 +17,7 @@
 ### Changed
 - Cipher order of TLS: the same six suites (ECDHE with AES-128/256-GCM or ChaCha20-Poly1305), now ordered by the CPU. With AES-NI and PCLMULQDQ AES-GCM comes first, which was about 30% faster on large replies in `tools/tlsbench.nim` (33.5 MB/s with ChaCha20, 42-47 MB/s with AES-GCM, loopback, both ends in one process); otherwise ChaCha20 stays first, as BearSSL's portable AES is slow. A server now enforces its own order instead of following the client's. Choose with `cipherOrder` of `tlsServerConfig` / `tlsClientConfig` (`coAuto`, `coAesGcmFirst`, `coChaChaFirst`) or `setCipherOrder`.
 - Fewer copies of a message. On receipt `wire.MsgBuf` (replacing `takeFrame` and `appendData`, which were internal) builds the message straight from the chunks as they arrive, instead of collecting them in a buffer and slicing the message out; a declared length reserves nothing, memory grows with the bytes received. On sending, the 5-byte frame prefix goes in front of the message in the stream buffer (`head` of `sendData` / `send`), so `encodeMessage` is no longer called for each message. Measured in pinned runs (`taskset`, `tools/tlsbench.nim`): 64 KiB over TLS about 4% faster, 1 MiB 1-2%, small messages unchanged.
-- CI tests on Nim 2.2.12 (the floor of `grpc.nimble`) and 2.2.14; the soak test runs on 2.2.14. Renovate proposes new Nim versions (`renovate.json`), which Dependabot cannot see.
+- CI tests on Nim 2.2.12 (the floor of `nimgrpc.nimble`) and 2.2.14; the soak test runs on 2.2.14. Renovate proposes new Nim versions (`renovate.json`), which Dependabot cannot see.
 
 ### Fixed
 - A new TLS connection took about twice as long as it had to: BearSSL's "full" profiles verify certificate signatures with the generic prime_i31 code, which was about 60% of a handshake. Certificates and the handshake now use the fast P-256 code (m64 where the CPU has 64x64->128 multiplication, m31 otherwise). New connection plus first call, `tools/hsbench.nim`: TLS 7.7 to 4.2 ms, mutual TLS 9.5 to 5.7 ms.

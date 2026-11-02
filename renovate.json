@@ -17,7 +17,7 @@
     },
     {
       "customType": "regex",
-      "description": "the second entry of the nim matrix in ci.yml (the first is the floor of grpc.nimble and stays)",
+      "description": "the second entry of the nim matrix in ci.yml (the first is the floor of nimgrpc.nimble and stays)",
       "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
       "matchStrings": ["nim: \\[\"\\d+\\.\\d+\\.\\d+\", \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"\\]"],
       "depNameTemplate": "nim-lang/Nim",
@@ -29,7 +29,7 @@
     {
       "matchDepNames": ["nim-lang/Nim"],
       "commitMessageTopic": "Nim in CI",
-      "prBodyNotes": ["A new Nim minor version may need changes in the library (see docs/nim-compiler-notes.md). The floor in `grpc.nimble` and the first entry of the CI matrix are not touched by this update."]
+      "prBodyNotes": ["A new Nim minor version may need changes in the library (see docs/nim-compiler-notes.md). The floor in `nimgrpc.nimble` and the first entry of the CI matrix are not touched by this update."]
     }
   ]
 }

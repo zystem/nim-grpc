@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [plain, asan]
-        # the oldest Nim that grpc.nimble allows, and the current stable one (Renovate moves the second)
+        # the oldest Nim that nimgrpc.nimble allows, and the current stable one (Renovate moves the second)
         nim: ["2.2.12", "2.2.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
