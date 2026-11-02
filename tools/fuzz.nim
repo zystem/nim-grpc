@@ -59,12 +59,18 @@ proc mutate(rng: var Rand; seed: seq[byte]): seq[byte] =
 # ------------------------------------------------------------------ targets
 
 proc tFrames(d: seq[byte]) =
-  var buf = d
-  var pos = 0
+  ## Frames fed in chunks of varying size, as they arrive.
+  var m: MsgBuf
   var payload: seq[byte]
   var compressed: bool
+  var i = 0
   try:
-    while takeFrame(buf, pos, 4096, payload, compressed): discard
+    while i < d.len:
+      let k = min(d.len - i, 1 + int(d[i]) mod 64 * 7)
+      var chunk = d[i ..< i + k]
+      i += k
+      m.feed(chunk)
+      while m.take(4096, payload, compressed): discard
   except GrpcError: discard
 
 proc tGzip(d: seq[byte]) =

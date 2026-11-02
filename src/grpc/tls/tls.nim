@@ -25,6 +25,7 @@ proc gtls_conf_set_identity(c: GtlsConfP; chain: ptr byte; chainLen: csize_t;
                             key: ptr byte; keyLen: csize_t): cint
 proc gtls_conf_require_client_cert(c: GtlsConfP; on: cint)
 proc gtls_conf_set_cipher_order(c: GtlsConfP; order: cint)
+proc gtls_conf_set_lifetime(c: GtlsConfP; seconds: cint)
 proc gtls_conf_free(c: GtlsConfP)
 proc gtls_client_new(c: GtlsConfP; serverName: cstring): GtlsConnP
 proc gtls_server_new(c: GtlsConfP): GtlsConnP
@@ -39,6 +40,7 @@ proc gtls_pull_app(t: GtlsConnP; data: ptr byte; cap: csize_t): csize_t
 proc gtls_close(t: GtlsConnP)
 proc gtls_alpn(t: GtlsConnP): cstring
 proc gtls_peer_ok(t: GtlsConnP): cint
+proc gtls_resumed(t: GtlsConnP): cint
 {.pop.}
 
 const
@@ -103,6 +105,18 @@ proc setCipherOrder*(c: TlsConfig; order: CipherOrder) =
   ## ChaCha20-Poly1305 elsewhere, where BearSSL's portable AES is slow.
   gtls_conf_set_cipher_order(c.raw, cint(ord(order)))
 
+const defaultSessionLifetime* = 600
+
+proc setSessionLifetime*(c: TlsConfig; seconds: int) =
+  ## How long a TLS session may be resumed, which skips the public-key work of
+  ## a handshake (a new connection costs about half as much). A server keeps
+  ## the sessions of authenticated peers for at most this long and a client
+  ## offers the last one for the same server name for as long; 0 turns
+  ## resumption off. A resumed session is not checked against the certificate
+  ## again, so this is also how long a revoked or expired certificate still
+  ## works for a client that already has a session. Default ten minutes.
+  gtls_conf_set_lifetime(c.raw, cint(seconds))
+
 proc requireClientCert*(c: TlsConfig; on = true) =
   ## Server: refuse clients without a certificate that chains to a trusted CA.
   gtls_conf_require_client_cert(c.raw, cint(on))
@@ -156,6 +170,10 @@ proc errorMessage*(t: TlsConn): string =
     elif e >= 256: "TLS: peer sent fatal alert " & $(e - 256)
     else: "TLS error " & $e
 
+proc resumed*(t: TlsConn): bool =
+  ## After the handshake: the session was resumed, not made afresh.
+  gtls_resumed(t.raw) != 0
+
 proc handshakeDone*(t: TlsConn): bool = (gtls_state(t.raw) and stSendApp) != 0
 
 proc checkPeer*(t: TlsConn) =
@@ -180,11 +198,12 @@ proc pushRecords*(t: TlsConn; data: openArray[byte]): int =
 
 proc pullApp*(t: TlsConn; dst: var seq[byte]) =
   ## Appends the plaintext received so far to `dst`.
-  var buf: array[16384, byte]
   while true:
-    let n = gtls_pull_app(t.raw, buf[0].addr, buf.len.csize_t).int
+    let start = dst.len
+    dst.setLenUninit(start + 16384)
+    let n = gtls_pull_app(t.raw, dst[start].addr, 16384).int
+    dst.setLen(start + n)
     if n == 0: break
-    dst.add buf.toOpenArray(0, n - 1)
 
 proc pushApp*(t: TlsConn; data: openArray[byte]): int =
   ## Queues plaintext to send; returns how many bytes were taken (0 during the
@@ -200,10 +219,11 @@ proc flush*(t: TlsConn) = gtls_flush(t.raw)
 
 proc pullRecords*(t: TlsConn): seq[byte] =
   ## Records ready for the network.
-  var buf: array[16384, byte]
   while true:
-    let n = gtls_pull_records(t.raw, buf[0].addr, buf.len.csize_t).int
+    let start = result.len
+    result.setLenUninit(start + 16384)
+    let n = gtls_pull_records(t.raw, result[start].addr, 16384).int
+    result.setLen(start + n)
     if n == 0: break
-    result.add buf.toOpenArray(0, n - 1)
 
 proc close*(t: TlsConn) = gtls_close(t.raw)

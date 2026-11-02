@@ -19,7 +19,7 @@
 ## count is touched from two threads.
 
 import std/[locks, net, tables, deques, os, posix, atomics]
-import ./session, ./common, ../tls/tls, ../cleanup
+import ./session, ./common, ../tls/tls, ../cleanup, ../bytebuf
 
 export session.Header, session.H2Error, net.Port, tls, common.H2Timeout,
        common.H2StreamClosed, common.Keepalive, common.PingPolicy
@@ -41,6 +41,8 @@ type
     lock: Lock
     cond: Cond            ## every waiter on this connection, and the writer
     outQ: Deque[seq[byte]]
+    wcond: Cond           ## the writer waits here, so a broadcast on `cond` does not wake it
+    waiters: int          ## threads waiting on `cond`; nobody to wake means no broadcast
     outQBytes: int
     streams: Table[int32, StreamState]
     server: ptr ServerObj ## nil for a client connection
@@ -51,7 +53,9 @@ type
     tls: TlsConn          ## nil for plaintext; used only under `lock`
     tlsConf: TlsConfig    ## client: keeps the config alive
     plainOut: seq[byte]   ## TLS: session output the engine has not taken yet
+    plainPos: int         ## ... of which `plainOut[0 ..< plainPos]` is taken
     tlsIn: seq[byte]      ## TLS: records the engine has not taken yet
+    tlsInPos: int         ## ... of which `tlsIn[0 ..< tlsInPos]` is taken
     ioRunning: int        ## reader/writer loops still running for this connection
     ka: Keepalive
     policy: PingPolicy
@@ -145,6 +149,7 @@ proc `=destroy`(c: ConnObj) =
   `=destroy`(c.sock.addr[])
   deinitLock(c.lock.addr[])
   deinitCond(c.cond.addr[])
+  deinitCond(c.wcond.addr[])
   `=destroy`(c.sess.addr[])
   `=destroy`(c.outQ.addr[])
   `=destroy`(c.streams.addr[])
@@ -203,45 +208,53 @@ template threadBody(body: untyped) =
 # ------------------------------------------------------------ connection internals
 # Procs ending in `Locked` expect `c.lock` to be held.
 
+proc wakeAll(c: ptr ConnObj) {.inline.} =
+  if c.waiters > 0: broadcast(c.cond)
+
 proc queueOutputLocked(c: ptr ConnObj) =
   ## Moves what the session produced (encrypted, with TLS) to the writer.
   if c.outQBytes >= maxOutQueue: return   # the writer pulls more as it drains
-  let o = c.sess.takeOutput()
   if c.tls == nil:
+    let o = c.sess.takeOutput()
     if o.len > 0:
       c.outQBytes += o.len
       c.outQ.addLast o
+      signal(c.wcond)
   else:
-    c.plainOut.add o
+    c.sess.takeOutputInto(c.plainOut)
     while true:
       var progressed = false
-      if c.plainOut.len > 0:
-        let n = c.tls.pushApp(c.plainOut)
+      if c.plainPos < c.plainOut.len:
+        let n = c.tls.pushApp(c.plainOut.toOpenArray(c.plainPos, c.plainOut.high))
         if n > 0:
-          c.plainOut.dropPrefix(n)
+          c.plainOut.consumed(c.plainPos, n)
           progressed = true
       if c.plainOut.len == 0: c.tls.flush()
       let recs = c.tls.pullRecords()
       if recs.len > 0:
         c.outQBytes += recs.len
         c.outQ.addLast recs
+        signal(c.wcond)
         progressed = true
       if not progressed or c.outQBytes >= maxOutQueue: break
-  broadcast(c.cond)     # senders may now be under their buffer limit
+  c.wakeAll()     # senders may now be under their buffer limit
 
 proc failLocked(c: ptr ConnObj; why: string) =
   if not c.closed:
     c.closed = true
     if c.failure.len == 0: c.failure = why
     for st in c.streams.mvalues: st.closed = true
-    broadcast(c.cond)
+    signal(c.wcond)
+    c.wakeAll()
 
 proc waitLocked(c: ptr ConnObj; hasDeadline: bool; deadline: Timespec): bool =
   ## One wait on the connection condition; false if the deadline passed.
-  if hasDeadline: waitUntil(c.cond, c.lock, deadline)
+  inc c.waiters
+  if hasDeadline: result = waitUntil(c.cond, c.lock, deadline)
   else:
     wait(c.cond, c.lock)
-    true
+    result = true
+  dec c.waiters
 
 proc streamPtr(c: ptr ConnObj; id: int32): ptr StreamState =
   ## nil if the stream is unknown. Never raises.
@@ -267,7 +280,8 @@ proc dispatchLocked(c: ptr ConnObj; id: int32; headers: seq[Header]) =
 
 proc handleEventsLocked(c: ptr ConnObj) =
   let isServer = c.server != nil
-  for ev in c.sess.takeEvents():
+  var events = c.sess.takeEvents()
+  for ev in events.mitems:
     let known = ev.streamId in c.streams
     case ev.kind
     of evHeaders:
@@ -282,7 +296,8 @@ proc handleEventsLocked(c: ptr ConnObj) =
     of evData:
       if known:
         let st = c.streamPtr(ev.streamId)
-        st.inbuf.add ev.data
+        if st.inbuf.len == 0: st.inbuf = move ev.data     # no copy
+        else: st.inbuf.appendBytes ev.data
         if ev.dataEndStream: st.inEnded = true
     of evStreamClosed:
       if known:
@@ -294,6 +309,7 @@ proc handleEventsLocked(c: ptr ConnObj) =
       c.goawayReceived = true
     of evPingAck:
       c.pingOutstanding = false
+      signal(c.wcond)       # the writer schedules the next ping
     of evPing:
       if isServer and c.policy.minIntervalMs > 0:
         let now = nowNs()
@@ -309,14 +325,14 @@ proc handleEventsLocked(c: ptr ConnObj) =
           c.queueOutputLocked()
           c.failLocked("client sent too many pings")
     if ev.kind in {evHeaders, evData}: c.pingStrikes = 0
-  broadcast(c.cond)
+  c.wakeAll()
 
 proc pumpTlsInLocked(c: ptr ConnObj) =
   ## Decrypts buffered records and feeds the plaintext to the session.
   var app: seq[byte]
   while true:
-    let k = c.tls.pushRecords(c.tlsIn)
-    if k > 0: c.tlsIn.dropPrefix(k)
+    let k = c.tls.pushRecords(c.tlsIn.toOpenArray(c.tlsInPos, c.tlsIn.high))
+    if k > 0: c.tlsIn.consumed(c.tlsInPos, k)
     c.tls.pullApp(app)
     if k == 0:
       # The engine wants to send first (handshake), or is closed.
@@ -332,7 +348,7 @@ proc pumpTlsInLocked(c: ptr ConnObj) =
 proc ioDone(c: ptr ConnObj) =
   acquire(c.lock)
   dec c.ioRunning
-  broadcast(c.cond)
+  c.wakeAll()
   release(c.lock)
 
 proc readerLoop(c: ptr ConnObj) =
@@ -355,7 +371,7 @@ proc readerLoop(c: ptr ConnObj) =
         if c.tls == nil:
           c.sess.recv(buf.toOpenArray(0, n - 1))
         else:
-          c.tlsIn.add buf.toOpenArray(0, n - 1)
+          c.tlsIn.appendBytes(buf[0].addr, n)
           c.pumpTlsInLocked()
         c.handleEventsLocked()
         c.queueOutputLocked()
@@ -406,12 +422,14 @@ proc writerLoop(c: ptr ConnObj) =
       while c.outQ.len == 0 and not c.closed:
         let waitMs = c.keepaliveLocked()
         if c.outQ.len > 0 or c.closed: break
-        if waitMs < 0: wait(c.cond, c.lock)
-        else: discard waitUntil(c.cond, c.lock, deadlineIn(waitMs))
+        if waitMs < 0: wait(c.wcond, c.lock)
+        else: discard waitUntil(c.wcond, c.lock, deadlineIn(waitMs))
       if c.outQ.len == 0:           # closed and drained
         release(c.lock)
         break
-      let chunk = c.outQ.popFirst()
+      var chunk = c.outQ.popFirst()
+      while c.outQ.len > 0 and chunk.len < 65536 and c.outQ.peekFirst.len <= 65536:
+        chunk.appendBytes c.outQ.popFirst()     # one send for what is ready
       release(c.lock)
       var off = 0
       var ok = true
@@ -444,6 +462,7 @@ proc newConn(sock: Socket; sess: H2Session; server: ptr ServerObj): Conn =
   result = Conn(sock: sock, sess: sess, server: server, lastReadNs: nowNs())
   initLock(result.lock)
   initCond(result.cond)
+  initCond(result.wcond)
   result.outQ = initDeque[seq[byte]]()
 
 # ------------------------------------------------------------ I/O thread pool
@@ -531,9 +550,12 @@ proc stopThreads(c: Conn) =
     except CatchableError: discard
     c.closed = true
     for st in c.streams.mvalues: st.closed = true
-    broadcast(c.cond)
+    signal(c.wcond)
+    c.wakeAll()
+  inc c.waiters
   while c.ioRunning > 0:
     wait(c.cond, c.lock)               # the writer drains, then shuts the socket down
+  dec c.waiters
   release(c.lock)
 
 # ------------------------------------------------------------ shared stream I/O
@@ -555,21 +577,27 @@ proc timeoutLocked(c: ptr ConnObj; id: int32): ref H2Timeout =
     c.streamPtr(id).errorCode = CANCEL
   newException(H2Timeout, "deadline exceeded on stream " & $id)
 
-proc sendLocked(c: ptr ConnObj; id: int32; data: openArray[byte]; endStream: bool;
+proc sendLocked(c: ptr ConnObj; id: int32; head, data: openArray[byte]; endStream: bool;
                 hasDeadline: bool; deadline: Timespec) =
-  ## Queues body bytes, waiting while the stream's unsent buffer is full.
+  ## Queues body bytes (`head` then `data`), waiting while the stream's unsent
+  ## buffer is full.
   var off = 0
+  let total = head.len + data.len
   while true:
     let s = c.streamPtr(id)          # re-read: the table may grow while we wait
     if s == nil or s.closed or c.closed: raise c.closedError(s, id)
     if s.outEnded: raise newException(H2Error, "stream " & $id & ": body already ended")
     let room = maxStreamBuffer - c.sess.buffered(id)
-    let remaining = data.len - off
+    let remaining = total - off
     if room > 0 or remaining == 0:
       let n = min(max(room, 0), remaining)
       let last = n == remaining
       if n > 0 or (last and endStream):
-        c.sess.sendData(id, data.toOpenArray(off, off + n - 1),
+        let h0 = min(off, head.len)
+        let h1 = min(off + n, head.len)
+        let d0 = max(off - head.len, 0)
+        let d1 = max(off + n - head.len, 0)
+        c.sess.sendData(id, head.toOpenArray(h0, h1 - 1), data.toOpenArray(d0, d1 - 1),
                         endStream = last and endStream)
         off += n
         if last and endStream: s.outEnded = true
@@ -651,7 +679,10 @@ proc waitClosed*(st: ServerStream; ms: int): bool =
     if c.closed or st.id notin c.streams or c.streamPtr(st.id).closed:
       result = true
       break
-    if not waitUntil(c.cond, c.lock, until):
+    inc c.waiters
+    let woke = waitUntil(c.cond, c.lock, until)
+    dec c.waiters
+    if not woke:
       result = c.closed or st.id notin c.streams or c.streamPtr(st.id).closed
       break
   release(c.lock)
@@ -673,11 +704,13 @@ proc sendHeaders*(st: var ServerStream; headers: openArray[Header]; endStream = 
   finally:
     release(c.lock)
 
-proc sendData*(st: var ServerStream; data: openArray[byte]; endStream = false) =
+proc sendData*(st: var ServerStream; data: openArray[byte]; endStream = false;
+               head: openArray[byte] = []) =
+  ## Queues `head` then `data` as body bytes.
   let c = st.conn
   acquire(c.lock)
   try:
-    c.sendLocked(st.id, data, endStream, st.hasDeadline, st.deadline)
+    c.sendLocked(st.id, head, data, endStream, st.hasDeadline, st.deadline)
   finally:
     release(c.lock)
 
@@ -718,7 +751,7 @@ proc finishHandlerLocked(c: ptr ConnObj; id: int32) =
       except CatchableError: discard
     c.streams.del(id)      # a late close event finds nothing and is ignored
   dec c.pending
-  broadcast(c.cond)
+  c.wakeAll()
 
 proc workerLoop(s: ptr ServerObj) {.thread.} =
   threadBody:
@@ -746,7 +779,7 @@ proc readRequest*(st: var ServerStream): Request =
   ## Reads the whole request body.
   result.headers = st.headers
   var chunk: seq[byte]
-  while st.recvData(chunk): result.body.add chunk
+  while st.recvData(chunk): result.body.appendBytes chunk
 
 proc respond*(st: var ServerStream; rep: Reply) =
   if rep.headersOnly:
@@ -874,8 +907,10 @@ proc stop*(s: Server; graceMs = 0) =
     for c in s.conns:
       acquire(c.lock)
       while not c.closed and (c.pending > 0 or c.streams.len > 0) and nowNs() < deadline:
+        inc c.waiters
         discard waitUntil(c.cond, c.lock, deadlineIn(
           max(1, int((deadline - nowNs()) div 1_000_000))))
+        dec c.waiters
       release(c.lock)
   for c in s.conns: c.stopThreads()   # streams close; handlers see it and return
   acquire(s.jobLock)
@@ -955,11 +990,13 @@ proc openStream*(c: Conn; headers: openArray[Header]; timeoutMs = -1): ClientStr
   finally:
     release(c.lock)
 
-proc send*(st: var ClientStream; data: openArray[byte]; endStream = false) =
+proc send*(st: var ClientStream; data: openArray[byte]; endStream = false;
+           head: openArray[byte] = []) =
+  ## Queues `head` then `data` as body bytes.
   let c = st.conn
   acquire(c.lock)
   try:
-    c.sendLocked(st.id, data, endStream, st.hasDeadline, st.deadline)
+    c.sendLocked(st.id, head, data, endStream, st.hasDeadline, st.deadline)
   finally:
     release(c.lock)
 
@@ -1074,7 +1111,7 @@ proc request*(c: Conn; headers: openArray[Header]; body: openArray[byte] = [];
       st.send(body, endStream = true)
       res.headers = st.recvHeaders()
       var chunk: seq[byte]
-      while st.recvData(chunk): res.body.add chunk
+      while st.recvData(chunk): res.body.appendBytes chunk
       res.trailers = st.recvTrailers()
     except H2StreamClosed as e:
       acquire(c.lock)

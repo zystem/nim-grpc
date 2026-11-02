@@ -129,8 +129,8 @@ suite "chronos h2":
       discard await st.recvHeaders()
       discard await st.recvTrailers()
       await f
-      # While the handler slept the sender was held to the initial window.
-      ck slowFirst > 0 and slowFirst <= 65_535
+      # While the handler slept the sender was held to our receive window (1 MiB, of the 2 MiB sent).
+      ck slowFirst > 0 and slowFirst <= 1_048_576
       ck slowTaken == 2_097_152
       st.release()
       await c.close()

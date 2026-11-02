@@ -33,10 +33,25 @@ const
   readChunk* = 16 * 1024
   maxOutQueue* = 256 * 1024        ## bytes framed and waiting for the socket
   maxStreamBuffer* = 256 * 1024    ## unsent body bytes per stream before send waits
+  NO_ERROR* = 0'u32
   INTERNAL_ERROR* = 2'u32
   CANCEL* = 8'u32
   ENHANCE_YOUR_CALM* = 11'u32
   defaultPingTimeoutMs* = 20_000
+
+proc consumed*(s: var seq[byte]; pos: var int; n: int) =
+  ## Marks `n` more bytes at the front of `s` as used. The buffer is only
+  ## emptied once all of it is used (or, for a long one, half of it is), so
+  ## taking it a record at a time does not shift the rest each time.
+  pos += n
+  if pos >= s.len:
+    s.setLen(0)
+    pos = 0
+  elif pos >= 65536 and pos * 2 >= s.len:
+    let rest = s.len - pos
+    moveMem(s[0].addr, s[pos].addr, rest)
+    s.setLen(rest)
+    pos = 0
 
 proc dropPrefix*(s: var seq[byte]; n: int) =
   let rest = s.len - n

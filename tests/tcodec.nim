@@ -5,8 +5,8 @@
 ## protoc is available (PROTOC, default `protoc` on PATH) the re-encoded bytes
 ## must also decode, in protoc, to the same text as the original.
 
-import std/[unittest, os, osproc, options, tables, math]
-import grpc/protobuf
+import std/[unittest, os, osproc, options, tables, math, sequtils]
+import grpc/[protobuf, bytebuf, wire, status]
 import ./gen/[codec_pb, legacy_pb]
 
 const dir = currentSourcePath.parentDir / "proto"
@@ -156,3 +156,73 @@ suite "proto2 codec":
       skip()
     else:
       check protocDecode("codec.legacy.Legacy", "legacy.proto", m.encode) == a
+
+suite "byte buffers":
+  test "appendBytes keeps what is there and adds the rest":
+    var b = @[1'u8, 2]
+    b.appendBytes [3'u8, 4, 5]
+    b.appendBytes newSeq[byte]()
+    check b == @[1'u8, 2, 3, 4, 5]
+    var raw = [9'u8, 8]
+    b.appendBytes(raw[0].addr, 2)
+    b.appendBytes(nil, 0)
+    check b == @[1'u8, 2, 3, 4, 5, 9, 8]
+
+  test "frames split across chunks are reassembled":
+    let frames = encodeMessage([10'u8, 20, 30]) & encodeMessage([40'u8])
+    var m: MsgBuf
+    var got: seq[seq[byte]]
+    for i in 0 ..< frames.len:                  # one byte at a time
+      var chunk = @[frames[i]]
+      m.feed(chunk)
+      var payload: seq[byte]
+      var compressed: bool
+      while m.take(1024, payload, compressed):
+        got.add payload
+    check got == @[@[10'u8, 20, 30], @[40'u8]]
+    check m.leftover == 0
+
+  test "several frames in one chunk, an empty one and a partial tail":
+    let f = encodeMessage([1'u8, 2]) & encodeMessage([]) & encodeMessage([7'u8, 8, 9])
+    var m: MsgBuf
+    var chunk = f[0 ..< f.len - 2]
+    m.feed(chunk)
+    var payload: seq[byte]
+    var compressed: bool
+    check m.take(1024, payload, compressed) and payload == @[1'u8, 2]
+    check m.take(1024, payload, compressed) and payload.len == 0
+    check not m.take(1024, payload, compressed)
+    check m.leftover == 5 + 1
+    chunk = f[f.len - 2 .. ^1]
+    m.feed(chunk)
+    check m.take(1024, payload, compressed) and payload == @[7'u8, 8, 9]
+    check m.leftover == 0
+
+  test "a compressed flag is reported":
+    var m: MsgBuf
+    var chunk = encodeMessage([5'u8], compressed = true)
+    m.feed(chunk)
+    var payload: seq[byte]
+    var compressed: bool
+    check m.take(1024, payload, compressed) and compressed
+
+  test "a bad flag and an oversize length are refused, and reserve nothing":
+    var payload: seq[byte]
+    var compressed: bool
+    var m: MsgBuf
+    var chunk = @[2'u8, 0, 0, 0, 1, 0]
+    m.feed(chunk)
+    expect GrpcError: discard m.take(1024, payload, compressed)
+    var m2: MsgBuf
+    chunk = frameHeader(1_000_000).toSeq
+    m2.feed(chunk)
+    expect GrpcError: discard m2.take(1024, payload, compressed)
+    # within the limit, the length alone allocates only a little
+    var m3: MsgBuf
+    chunk = frameHeader(1_000_000).toSeq
+    m3.feed(chunk)
+    check not m3.take(4_000_000, payload, compressed)
+    check m3.leftover == 5
+
+  test "frameHeader agrees with encodeMessage":
+    check @(frameHeader(300, true)) == encodeMessage(newSeq[byte](300), compressed = true)[0 ..< 5]
