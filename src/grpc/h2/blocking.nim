@@ -41,6 +41,8 @@ type
     lock: Lock
     cond: Cond            ## every waiter on this connection, and the writer
     outQ: Deque[seq[byte]]
+    wcond: Cond           ## the writer waits here, so a broadcast on `cond` does not wake it
+    waiters: int          ## threads waiting on `cond`; nobody to wake means no broadcast
     outQBytes: int
     streams: Table[int32, StreamState]
     server: ptr ServerObj ## nil for a client connection
@@ -147,6 +149,7 @@ proc `=destroy`(c: ConnObj) =
   `=destroy`(c.sock.addr[])
   deinitLock(c.lock.addr[])
   deinitCond(c.cond.addr[])
+  deinitCond(c.wcond.addr[])
   `=destroy`(c.sess.addr[])
   `=destroy`(c.outQ.addr[])
   `=destroy`(c.streams.addr[])
@@ -205,6 +208,9 @@ template threadBody(body: untyped) =
 # ------------------------------------------------------------ connection internals
 # Procs ending in `Locked` expect `c.lock` to be held.
 
+proc wakeAll(c: ptr ConnObj) {.inline.} =
+  if c.waiters > 0: broadcast(c.cond)
+
 proc queueOutputLocked(c: ptr ConnObj) =
   ## Moves what the session produced (encrypted, with TLS) to the writer.
   if c.outQBytes >= maxOutQueue: return   # the writer pulls more as it drains
@@ -213,6 +219,7 @@ proc queueOutputLocked(c: ptr ConnObj) =
     if o.len > 0:
       c.outQBytes += o.len
       c.outQ.addLast o
+      signal(c.wcond)
   else:
     c.sess.takeOutputInto(c.plainOut)
     while true:
@@ -227,23 +234,27 @@ proc queueOutputLocked(c: ptr ConnObj) =
       if recs.len > 0:
         c.outQBytes += recs.len
         c.outQ.addLast recs
+        signal(c.wcond)
         progressed = true
       if not progressed or c.outQBytes >= maxOutQueue: break
-  broadcast(c.cond)     # senders may now be under their buffer limit
+  c.wakeAll()     # senders may now be under their buffer limit
 
 proc failLocked(c: ptr ConnObj; why: string) =
   if not c.closed:
     c.closed = true
     if c.failure.len == 0: c.failure = why
     for st in c.streams.mvalues: st.closed = true
-    broadcast(c.cond)
+    signal(c.wcond)
+    c.wakeAll()
 
 proc waitLocked(c: ptr ConnObj; hasDeadline: bool; deadline: Timespec): bool =
   ## One wait on the connection condition; false if the deadline passed.
-  if hasDeadline: waitUntil(c.cond, c.lock, deadline)
+  inc c.waiters
+  if hasDeadline: result = waitUntil(c.cond, c.lock, deadline)
   else:
     wait(c.cond, c.lock)
-    true
+    result = true
+  dec c.waiters
 
 proc streamPtr(c: ptr ConnObj; id: int32): ptr StreamState =
   ## nil if the stream is unknown. Never raises.
@@ -296,6 +307,7 @@ proc handleEventsLocked(c: ptr ConnObj) =
       c.goawayReceived = true
     of evPingAck:
       c.pingOutstanding = false
+      signal(c.wcond)       # the writer schedules the next ping
     of evPing:
       if isServer and c.policy.minIntervalMs > 0:
         let now = nowNs()
@@ -311,7 +323,7 @@ proc handleEventsLocked(c: ptr ConnObj) =
           c.queueOutputLocked()
           c.failLocked("client sent too many pings")
     if ev.kind in {evHeaders, evData}: c.pingStrikes = 0
-  broadcast(c.cond)
+  c.wakeAll()
 
 proc pumpTlsInLocked(c: ptr ConnObj) =
   ## Decrypts buffered records and feeds the plaintext to the session.
@@ -334,7 +346,7 @@ proc pumpTlsInLocked(c: ptr ConnObj) =
 proc ioDone(c: ptr ConnObj) =
   acquire(c.lock)
   dec c.ioRunning
-  broadcast(c.cond)
+  c.wakeAll()
   release(c.lock)
 
 proc readerLoop(c: ptr ConnObj) =
@@ -408,12 +420,14 @@ proc writerLoop(c: ptr ConnObj) =
       while c.outQ.len == 0 and not c.closed:
         let waitMs = c.keepaliveLocked()
         if c.outQ.len > 0 or c.closed: break
-        if waitMs < 0: wait(c.cond, c.lock)
-        else: discard waitUntil(c.cond, c.lock, deadlineIn(waitMs))
+        if waitMs < 0: wait(c.wcond, c.lock)
+        else: discard waitUntil(c.wcond, c.lock, deadlineIn(waitMs))
       if c.outQ.len == 0:           # closed and drained
         release(c.lock)
         break
-      let chunk = c.outQ.popFirst()
+      var chunk = c.outQ.popFirst()
+      while c.outQ.len > 0 and chunk.len < 65536 and c.outQ.peekFirst.len <= 65536:
+        chunk.appendBytes c.outQ.popFirst()     # one send for what is ready
       release(c.lock)
       var off = 0
       var ok = true
@@ -446,6 +460,7 @@ proc newConn(sock: Socket; sess: H2Session; server: ptr ServerObj): Conn =
   result = Conn(sock: sock, sess: sess, server: server, lastReadNs: nowNs())
   initLock(result.lock)
   initCond(result.cond)
+  initCond(result.wcond)
   result.outQ = initDeque[seq[byte]]()
 
 # ------------------------------------------------------------ I/O thread pool
@@ -533,9 +548,12 @@ proc stopThreads(c: Conn) =
     except CatchableError: discard
     c.closed = true
     for st in c.streams.mvalues: st.closed = true
-    broadcast(c.cond)
+    signal(c.wcond)
+    c.wakeAll()
+  inc c.waiters
   while c.ioRunning > 0:
     wait(c.cond, c.lock)               # the writer drains, then shuts the socket down
+  dec c.waiters
   release(c.lock)
 
 # ------------------------------------------------------------ shared stream I/O
@@ -653,7 +671,10 @@ proc waitClosed*(st: ServerStream; ms: int): bool =
     if c.closed or st.id notin c.streams or c.streamPtr(st.id).closed:
       result = true
       break
-    if not waitUntil(c.cond, c.lock, until):
+    inc c.waiters
+    let woke = waitUntil(c.cond, c.lock, until)
+    dec c.waiters
+    if not woke:
       result = c.closed or st.id notin c.streams or c.streamPtr(st.id).closed
       break
   release(c.lock)
@@ -720,7 +741,7 @@ proc finishHandlerLocked(c: ptr ConnObj; id: int32) =
       except CatchableError: discard
     c.streams.del(id)      # a late close event finds nothing and is ignored
   dec c.pending
-  broadcast(c.cond)
+  c.wakeAll()
 
 proc workerLoop(s: ptr ServerObj) {.thread.} =
   threadBody:
@@ -876,8 +897,10 @@ proc stop*(s: Server; graceMs = 0) =
     for c in s.conns:
       acquire(c.lock)
       while not c.closed and (c.pending > 0 or c.streams.len > 0) and nowNs() < deadline:
+        inc c.waiters
         discard waitUntil(c.cond, c.lock, deadlineIn(
           max(1, int((deadline - nowNs()) div 1_000_000))))
+        dec c.waiters
       release(c.lock)
   for c in s.conns: c.stopThreads()   # streams close; handlers see it and return
   acquire(s.jobLock)

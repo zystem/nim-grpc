@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include "bearssl.h"
 
 /* ------------------------------------------------------------------ buffers */
@@ -376,10 +377,64 @@ static int aes_first(const gtls_conf *c) {
     return aes_gcm_is_fast();
 }
 
+
+/* Elliptic curves. BearSSL's "full" profiles verify certificate signatures
+ * with the generic prime_i31 code, which spends most of a handshake (about 60%
+ * of the CPU of a new mutual-TLS connection) on ECDSA verification. P-256
+ * has a much faster implementation on 64-bit machines (m64) and a fast one
+ * everywhere else (m31, inside br_ec_all_m31). Route P-256 to the best one and
+ * leave the other curves to br_ec_all_m31. */
+static const br_ec_impl *ec_p256_fast;
+
+static const br_ec_impl *ec_for(int curve) {
+    return (curve == BR_EC_secp256r1 && ec_p256_fast) ? ec_p256_fast : &br_ec_all_m31;
+}
+static const unsigned char *ecx_generator(int curve, size_t *len) {
+    return ec_for(curve)->generator(curve, len);
+}
+static const unsigned char *ecx_order(int curve, size_t *len) {
+    return ec_for(curve)->order(curve, len);
+}
+static size_t ecx_xoff(int curve, size_t *len) {
+    return ec_for(curve)->xoff(curve, len);
+}
+static uint32_t ecx_mul(unsigned char *G, size_t Glen, const unsigned char *x, size_t xlen, int curve) {
+    return ec_for(curve)->mul(G, Glen, x, xlen, curve);
+}
+static size_t ecx_mulgen(unsigned char *R, const unsigned char *x, size_t xlen, int curve) {
+    return ec_for(curve)->mulgen(R, x, xlen, curve);
+}
+static uint32_t ecx_muladd(unsigned char *A, const unsigned char *B, size_t len,
+                           const unsigned char *x, size_t xlen,
+                           const unsigned char *y, size_t ylen, int curve) {
+    return ec_for(curve)->muladd(A, B, len, x, xlen, y, ylen, curve);
+}
+static br_ec_impl ec_fast;
+
+static pthread_once_t ec_once = PTHREAD_ONCE_INIT;
+
+static void ec_init(void) {
+    ec_p256_fast = br_ec_p256_m64_get();
+    ec_fast.supported_curves = br_ec_all_m31.supported_curves;
+    ec_fast.generator = ecx_generator;
+    ec_fast.order = ecx_order;
+    ec_fast.xoff = ecx_xoff;
+    ec_fast.mul = ecx_mul;
+    ec_fast.mulgen = ecx_mulgen;
+    ec_fast.muladd = ecx_muladd;
+}
+
+static const br_ec_impl *ec_best(void) {
+    pthread_once(&ec_once, ec_init);
+    return &ec_fast;
+}
+
 static void setup_common(gtls_conn *t, gtls_conf *c) {
     br_x509_minimal_init_full(&t->x509, c->tas, c->ta_num);
     /* Certificates: RSA keys of 2048 bits or more (the default admits 1017),
      * and no MD5 or SHA-1 signatures. */
+    br_x509_minimal_set_ecdsa(&t->x509, ec_best(), br_ecdsa_vrfy_asn1_get_default());
+    br_ssl_engine_set_ec(t->eng, ec_best());
     br_x509_minimal_set_minrsa(&t->x509, 256);
     br_x509_minimal_set_hash(&t->x509, br_md5_ID, NULL);
     br_x509_minimal_set_hash(&t->x509, br_sha1_ID, NULL);
@@ -413,7 +468,7 @@ gtls_conn *gtls_client_new(gtls_conf *c, const char *server_name) {
         else
             br_ssl_client_set_single_ec(&t->u.client, c->chain, c->chain_len,
                                         &c->ec, BR_KEYTYPE_SIGN, 0,
-                                        br_ec_get_default(), br_ecdsa_sign_asn1_get_default());
+                                        ec_best(), br_ecdsa_sign_asn1_get_default());
     }
     if (!br_ssl_client_reset(&t->u.client, server_name, 0)) {
         free(t);
@@ -440,7 +495,7 @@ gtls_conn *gtls_server_new(gtls_conf *c) {
         /* The server only asks for certificate types it can verify; the
          * "full" server profiles install no signature verifiers. */
         br_ssl_engine_set_default_rsavrfy(t->eng);
-        br_ssl_engine_set_default_ecdsa(t->eng);
+        br_ssl_engine_set_ecdsa(t->eng, br_ecdsa_vrfy_asn1_get_default());
         t->verify_peer = 1;
     }
     if (!br_ssl_server_reset(&t->u.server)) {
