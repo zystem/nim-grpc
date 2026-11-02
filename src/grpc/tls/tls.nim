@@ -181,11 +181,12 @@ proc pushRecords*(t: TlsConn; data: openArray[byte]): int =
 
 proc pullApp*(t: TlsConn; dst: var seq[byte]) =
   ## Appends the plaintext received so far to `dst`.
-  var buf: array[16384, byte]
   while true:
-    let n = gtls_pull_app(t.raw, buf[0].addr, buf.len.csize_t).int
+    let start = dst.len
+    dst.setLenUninit(start + 16384)
+    let n = gtls_pull_app(t.raw, dst[start].addr, 16384).int
+    dst.setLen(start + n)
     if n == 0: break
-    dst.appendBytes(buf[0].addr, n)
 
 proc pushApp*(t: TlsConn; data: openArray[byte]): int =
   ## Queues plaintext to send; returns how many bytes were taken (0 during the
@@ -201,10 +202,11 @@ proc flush*(t: TlsConn) = gtls_flush(t.raw)
 
 proc pullRecords*(t: TlsConn): seq[byte] =
   ## Records ready for the network.
-  var buf: array[16384, byte]
   while true:
-    let n = gtls_pull_records(t.raw, buf[0].addr, buf.len.csize_t).int
+    let start = result.len
+    result.setLenUninit(start + 16384)
+    let n = gtls_pull_records(t.raw, result[start].addr, 16384).int
+    result.setLen(start + n)
     if n == 0: break
-    result.appendBytes(buf[0].addr, n)
 
 proc close*(t: TlsConn) = gtls_close(t.raw)

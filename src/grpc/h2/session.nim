@@ -243,14 +243,18 @@ proc recv*(s: H2Session; data: openArray[byte]) =
   let rv = nghttp2_session_mem_recv2(s.raw, data[0].unsafeAddr, data.len.csize_t)
   if rv < 0: raiseH2(rv, "mem_recv")
 
-proc takeOutput*(s: H2Session): seq[byte] =
-  ## Everything nghttp2 wants to transmit right now.
+proc takeOutputInto*(s: H2Session; dst: var seq[byte]) =
+  ## Like `takeOutput`, appending to `dst` and so saving a copy.
   while true:
     var p: ptr uint8
     let n = nghttp2_session_mem_send2(s.raw, p.addr)
     if n < 0: raiseH2(n, "mem_send")
     if n == 0: break
-    result.appendBytes(p, n.int)
+    dst.appendBytes(p, n.int)
+
+proc takeOutput*(s: H2Session): seq[byte] =
+  ## Everything nghttp2 wants to transmit right now.
+  s.takeOutputInto(result)
 
 proc takeEvents*(s: H2Session): seq[H2Event] =
   result = move s.events

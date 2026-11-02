@@ -51,7 +51,9 @@ type
     tls: TlsConn
     tlsConf: TlsConfig
     tlsIn: seq[byte]
+    tlsInPos: int
     plainOut: seq[byte]
+    plainPos: int
     outQ: Deque[seq[byte]]
     outQBytes: int
     writeEv: AsyncEvent
@@ -116,19 +118,19 @@ proc changed(st: AsyncH2Stream; room = false): Future[void] =
 proc queueOutput(c: AsyncH2Conn; force = false) =
   ## Moves what the session produced (encrypted, with TLS) to the writer.
   if c.outQBytes >= maxOutQueue and not force: return
-  let o = c.sess.takeOutput()
   if c.tls == nil:
+    let o = c.sess.takeOutput()
     if o.len > 0:
       c.outQBytes += o.len
       c.outQ.addLast o
   else:
-    c.plainOut.appendBytes o
+    c.sess.takeOutputInto(c.plainOut)
     while true:
       var progressed = false
-      if c.plainOut.len > 0:
-        let n = c.tls.pushApp(c.plainOut)
+      if c.plainPos < c.plainOut.len:
+        let n = c.tls.pushApp(c.plainOut.toOpenArray(c.plainPos, c.plainOut.high))
         if n > 0:
-          c.plainOut.dropPrefix(n)
+          c.plainOut.consumed(c.plainPos, n)
           progressed = true
       if c.plainOut.len == 0: c.tls.flush()
       let recs = c.tls.pullRecords()
@@ -250,8 +252,8 @@ proc pumpTlsIn(c: AsyncH2Conn) =
   ## Decrypts buffered records and feeds the plaintext to the session.
   var app: seq[byte]
   while true:
-    let k = c.tls.pushRecords(c.tlsIn)
-    if k > 0: c.tlsIn.dropPrefix(k)
+    let k = c.tls.pushRecords(c.tlsIn.toOpenArray(c.tlsInPos, c.tlsIn.high))
+    if k > 0: c.tlsIn.consumed(c.tlsInPos, k)
     c.tls.pullApp(app)
     if k == 0:
       # The engine wants to send first (handshake), or is closed.

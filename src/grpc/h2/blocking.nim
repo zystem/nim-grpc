@@ -51,7 +51,9 @@ type
     tls: TlsConn          ## nil for plaintext; used only under `lock`
     tlsConf: TlsConfig    ## client: keeps the config alive
     plainOut: seq[byte]   ## TLS: session output the engine has not taken yet
+    plainPos: int         ## ... of which `plainOut[0 ..< plainPos]` is taken
     tlsIn: seq[byte]      ## TLS: records the engine has not taken yet
+    tlsInPos: int         ## ... of which `tlsIn[0 ..< tlsInPos]` is taken
     ioRunning: int        ## reader/writer loops still running for this connection
     ka: Keepalive
     policy: PingPolicy
@@ -206,19 +208,19 @@ template threadBody(body: untyped) =
 proc queueOutputLocked(c: ptr ConnObj) =
   ## Moves what the session produced (encrypted, with TLS) to the writer.
   if c.outQBytes >= maxOutQueue: return   # the writer pulls more as it drains
-  let o = c.sess.takeOutput()
   if c.tls == nil:
+    let o = c.sess.takeOutput()
     if o.len > 0:
       c.outQBytes += o.len
       c.outQ.addLast o
   else:
-    c.plainOut.appendBytes o
+    c.sess.takeOutputInto(c.plainOut)
     while true:
       var progressed = false
-      if c.plainOut.len > 0:
-        let n = c.tls.pushApp(c.plainOut)
+      if c.plainPos < c.plainOut.len:
+        let n = c.tls.pushApp(c.plainOut.toOpenArray(c.plainPos, c.plainOut.high))
         if n > 0:
-          c.plainOut.dropPrefix(n)
+          c.plainOut.consumed(c.plainPos, n)
           progressed = true
       if c.plainOut.len == 0: c.tls.flush()
       let recs = c.tls.pullRecords()
@@ -315,8 +317,8 @@ proc pumpTlsInLocked(c: ptr ConnObj) =
   ## Decrypts buffered records and feeds the plaintext to the session.
   var app: seq[byte]
   while true:
-    let k = c.tls.pushRecords(c.tlsIn)
-    if k > 0: c.tlsIn.dropPrefix(k)
+    let k = c.tls.pushRecords(c.tlsIn.toOpenArray(c.tlsInPos, c.tlsIn.high))
+    if k > 0: c.tlsIn.consumed(c.tlsInPos, k)
     c.tls.pullApp(app)
     if k == 0:
       # The engine wants to send first (handshake), or is closed.
