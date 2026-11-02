@@ -192,6 +192,10 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
 
 # ---------------------------------------------------------------- public API
 
+const receiveWindow* = 1024 * 1024
+  ## What a peer may send us per stream, and per connection, before we credit
+  ## it again; also the most a stream's unread data can grow to.
+
 proc newSession(server, manualFlow: bool): H2Session =
   result = H2Session()
   var cbs: ptr Nghttp2SessionCallbacks
@@ -215,8 +219,15 @@ proc newSession(server, manualFlow: bool): H2Session =
   nghttp2_session_callbacks_del(cbs)
   if opt != nil: nghttp2_option_del(opt)
   if rv != 0: raiseH2(rv, "session_new")
-  let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, nil, 0)
+  # The default window of 64 KiB makes a large message wait for the peer's
+  # WINDOW_UPDATE every 64 KiB, each a round trip of threads and syscalls.
+  var iv: array[1, tuple[id: int32, value: uint32]]
+  iv[0] = (4'i32, receiveWindow.uint32)           # SETTINGS_INITIAL_WINDOW_SIZE
+  let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, iv.addr, 1)
   if rs != 0: raiseH2(rs, "submit_settings")
+  let rw = nghttp2_submit_window_update(result.raw, NGHTTP2_FLAG_NONE, 0,
+                                        (receiveWindow - 65535).int32)
+  if rw != 0: raiseH2(rw, "window_update")
 
 proc newClientSession*(manualFlow = false): H2Session = newSession(false, manualFlow)
 proc newServerSession*(manualFlow = false): H2Session = newSession(true, manualFlow)

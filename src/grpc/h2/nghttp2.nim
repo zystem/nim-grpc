@@ -141,6 +141,8 @@ proc nghttp2_session_resume_data*(session: ptr Nghttp2Session; streamId: int32):
 
 proc nghttp2_submit_settings*(session: ptr Nghttp2Session; flags: uint8;
   iv: pointer; niv: csize_t): cint
+proc nghttp2_submit_window_update*(session: ptr Nghttp2Session; flags: uint8;
+  streamId: int32; windowSizeIncrement: int32): cint
 proc nghttp2_submit_request2*(session: ptr Nghttp2Session; priSpec: pointer;
   nva: ptr Nghttp2Nv; nvlen: csize_t; dataPrd: ptr Nghttp2DataProvider2;
   streamUserData: pointer): int32
