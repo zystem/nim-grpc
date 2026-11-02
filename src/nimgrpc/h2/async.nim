@@ -19,7 +19,7 @@ import pkg/chronos
 import ./session, ./common, ../tls/tls, ../bytebuf
 
 export session.Header, session.H2Error, tls, common.H2Timeout,
-       common.H2StreamClosed, common.Keepalive, common.PingPolicy
+       common.H2StreamClosed, common.Keepalive, common.PingPolicy, common.Limits
 
 type
   Task = Future[void].Raising([])   ## a loop task or handler; never fails
@@ -63,6 +63,7 @@ type
     closed: bool
     failure: string
     server: AsyncH2Server      ## nil for a client connection
+    maxBuffer: int             ## `Limits.maxConnectionBuffer`; 0 for no limit
     lastDispatched: int32
     ka: Keepalive
     policy: PingPolicy
@@ -87,6 +88,7 @@ type
     tls: TlsConfig
     ka: Keepalive
     policy: PingPolicy
+    limits: Limits
     conns: seq[AsyncH2Conn]
     stopping: bool
 
@@ -467,7 +469,8 @@ proc pushSome(st: AsyncH2Stream; head, data: openArray[byte]; off: var int;
   let c = st.conn
   st.checkGone()
   if st.outEnded: raise newException(H2Error, "stream " & $st.id & ": body already ended")
-  let room = maxStreamBuffer - c.sess.buffered(st.id)
+  var room = maxStreamBuffer - c.sess.buffered(st.id)
+  if c.maxBuffer > 0: room = min(room, c.maxBuffer - c.sess.queuedBytes)
   let total = head.len + data.len
   let remaining = total - off
   if room <= 0 and remaining > 0: return false
@@ -700,10 +703,11 @@ proc runHandler(c: AsyncH2Conn; st: AsyncH2Stream) {.async: (raises: []).} =
 proc newAsyncStreamServer*(handler: AsyncStreamHandler; userData: pointer = nil;
                            port = Port(0); address = "127.0.0.1";
                            tls: TlsConfig = nil; keepalive = Keepalive();
-                           pingPolicy = PingPolicy()): AsyncH2Server =
+                           pingPolicy = PingPolicy(); limits = Limits()): AsyncH2Server =
   ## Listens right away; connections are served by the running event loop.
+  ## `limits` caps streams, connections and queued bytes (see `Limits`).
   let s = AsyncH2Server(handler: handler, userData: userData, tls: tls,
-                        ka: keepalive, policy: pingPolicy)
+                        ka: keepalive, policy: pingPolicy, limits: limits)
   proc accept(server: StreamServer; transp: StreamTransport) {.async: (raises: []).} =
     if s.stopping:
       await transp.closeWait()
@@ -713,9 +717,14 @@ proc newAsyncStreamServer*(handler: AsyncStreamHandler; userData: pointer = nil;
     for c in s.conns:
       if not (c.closed and c.streams.len == 0 and c.writerF.finished): keep.add c
     s.conns = keep
+    if s.limits.maxConnections > 0 and s.conns.len >= s.limits.maxConnections:
+      await transp.closeWait()         # over the limit: the peer sees a closed connection
+      return
     var c: AsyncH2Conn
     try:
-      c = newConn(transp, newServerSession(manualFlow = true), s, s.ka)
+      c = newConn(transp, newServerSession(
+        manualFlow = true, maxConcurrentStreams = s.limits.maxConcurrentStreams), s, s.ka)
+      c.maxBuffer = s.limits.maxConnectionBuffer
       c.policy = s.policy
       if s.tls != nil: c.tls = newServerTls(s.tls)
     except CatchableError:

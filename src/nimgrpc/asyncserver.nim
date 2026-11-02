@@ -22,7 +22,7 @@ import std/[tables, strutils, options]
 import pkg/chronos
 import ./status, ./wire, ./h2/async, ./compress/gzip
 export status, options, async.TlsConfig, async.tlsClientConfig, async.tlsServerConfig,
-       async.TlsError, async.Keepalive, async.PingPolicy, async.CipherOrder,
+       async.TlsError, async.Keepalive, async.PingPolicy, async.Limits, async.CipherOrder,
        async.setCipherOrder, async.setSessionLifetime, async.defaultSessionLifetime
 
 type
@@ -68,6 +68,7 @@ type
     tls: TlsConfig
     ka: Keepalive
     policy: PingPolicy
+    limits: Limits
     h2: AsyncH2Server
 
 # ---------------------------------------------------------------- AsyncServerCall
@@ -266,12 +267,15 @@ proc handle(s: AsyncGrpcServer; st: AsyncH2Stream): Future[void] {.async: (raise
 
 proc newAsyncGrpcServer*(port = 0; address = "127.0.0.1";
                          maxMessage = defaultMaxMessage; tls: TlsConfig = nil;
-                         keepalive = Keepalive(); pingPolicy = PingPolicy()): AsyncGrpcServer =
+                         keepalive = Keepalive(); pingPolicy = PingPolicy();
+                         limits = Limits()): AsyncGrpcServer =
   ## Register methods, then `start`. With `tls` (see `tlsServerConfig`)
   ## clients must use TLS 1.2 with ALPN h2. `keepalive` pings idle clients;
-  ## `pingPolicy` limits how often clients may ping.
+  ## `pingPolicy` limits how often clients may ping. `limits` caps the streams
+  ## of a connection, the connections and the bytes queued per connection
+  ## (see `Limits`; 100 streams by default).
   AsyncGrpcServer(maxMessage: maxMessage, port: port, address: address, tls: tls,
-                  ka: keepalive, policy: pingPolicy)
+                  ka: keepalive, policy: pingPolicy, limits: limits)
 
 proc addUnary*(s: AsyncGrpcServer; path: string; handler: AsyncUnaryHandler) =
   ## `path` is "/package.Service/Method".
@@ -287,7 +291,7 @@ proc start*(s: AsyncGrpcServer) =
   proc onStream(st: AsyncH2Stream; ud: pointer): Future[void] {.gcsafe, raises: [].} =
     s.handle(st)
   s.h2 = newAsyncStreamServer(onStream, nil, Port(s.port), s.address,
-                              s.tls, s.ka, s.policy)
+                              s.tls, s.ka, s.policy, s.limits)
 
 proc port*(s: AsyncGrpcServer): int =
   if s.h2 != nil: s.h2.port.int else: s.port

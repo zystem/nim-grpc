@@ -13,6 +13,22 @@ const nghttp2Prefix* {.strdefine.} = "/opt/nghttp2"
 
 const h = "nghttp2/nghttp2.h"
 
+{.emit: """/*INCLUDESECTION*/
+#include <nghttp2/nghttp2.h>
+#if NGHTTP2_VERSION_NUM < 0x013900
+#error "nimgrpc needs nghttp2 1.57.0 or later (it limits the Rapid Reset attack, CVE-2023-44487)"
+#endif
+""".}
+
+type
+  Nghttp2Info* {.importc: "nghttp2_info", header: h, incompleteStruct.} = object
+    versionNum* {.importc: "version_num".}: cint
+    versionStr* {.importc: "version_str".}: cstring
+
+proc nghttp2_version*(leastVersion: cint): ptr Nghttp2Info
+  {.importc: "nghttp2_version", header: h.}
+  ## The version of the linked library (`0` asks for the current one).
+
 type
   Nghttp2Session* {.importc: "nghttp2_session", header: h, incompleteStruct.} = object
   Nghttp2Option* {.importc: "nghttp2_option", header: h, incompleteStruct.} = object

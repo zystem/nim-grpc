@@ -58,6 +58,7 @@ type
     inHeaders: Table[int32, seq[Header]]
     inData: Table[int32, seq[byte]]
     outs: Table[int32, OutStream]
+    queued: int        ## body bytes in `outs` that nghttp2 has not framed yet
     failure: string    ## first error seen inside a callback
   H2Session* = ref H2SessionObj
 
@@ -140,6 +141,8 @@ proc onStreamClose(session: ptr Nghttp2Session; streamId: int32;
   let s = sess(userData)
   s.inHeaders.del(streamId)
   s.inData.del(streamId)
+  let gone = s.outs.getOrDefault(streamId)
+  if gone != nil: s.queued -= gone.buf.len - gone.pos
   s.outs.del(streamId)
   s.events.add H2Event(streamId: streamId, kind: evStreamClosed, errorCode: errorCode)
   0
@@ -163,6 +166,7 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
              length: csize_t; dataFlags: ptr uint32; source: ptr Nghttp2DataSource;
              userData: pointer): Nghttp2Ssize {.cdecl, raises: [].} =
   let o = cast[ptr OutStreamObj](source.`ptr`)
+  let ss = sess(userData)
   let avail = o.buf.len - o.pos
   if avail == 0 and not o.eof:
     o.deferred = true
@@ -171,6 +175,7 @@ proc readOut(session: ptr Nghttp2Session; streamId: int32; buf: ptr uint8;
   if n > 0:
     copyMem(buf, o.buf[o.pos].addr, n)
     o.pos += n
+    ss.queued -= n
     if o.pos == o.buf.len:          # drop what has been sent
       o.buf.setLen(0)
       o.pos = 0
@@ -196,7 +201,7 @@ const receiveWindow* = 1024 * 1024
   ## What a peer may send us per stream, and per connection, before we credit
   ## it again; also the most a stream's unread data can grow to.
 
-proc newSession(server, manualFlow: bool): H2Session =
+proc newSession(server, manualFlow: bool; maxStreams: int): H2Session =
   result = H2Session()
   var cbs: ptr Nghttp2SessionCallbacks
   if nghttp2_session_callbacks_new(cbs.addr) != 0:
@@ -221,19 +226,25 @@ proc newSession(server, manualFlow: bool): H2Session =
   if rv != 0: raiseH2(rv, "session_new")
   # The default window of 64 KiB makes a large message wait for the peer's
   # WINDOW_UPDATE every 64 KiB, each a round trip of threads and syscalls.
-  var iv: array[1, tuple[id: int32, value: uint32]]
+  var iv: array[2, tuple[id: int32, value: uint32]]
   iv[0] = (4'i32, receiveWindow.uint32)           # SETTINGS_INITIAL_WINDOW_SIZE
-  let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, iv.addr, 1)
+  var nIv = 1
+  if maxStreams > 0:
+    iv[1] = (3'i32, maxStreams.uint32)            # SETTINGS_MAX_CONCURRENT_STREAMS
+    nIv = 2
+  let rs = nghttp2_submit_settings(result.raw, NGHTTP2_FLAG_NONE, iv.addr, nIv.csize_t)
   if rs != 0: raiseH2(rs, "submit_settings")
   let rw = nghttp2_submit_window_update(result.raw, NGHTTP2_FLAG_NONE, 0,
                                         (receiveWindow - 65535).int32)
   if rw != 0: raiseH2(rw, "window_update")
 
-proc newClientSession*(manualFlow = false): H2Session = newSession(false, manualFlow)
-proc newServerSession*(manualFlow = false): H2Session = newSession(true, manualFlow)
+proc newClientSession*(manualFlow = false): H2Session = newSession(false, manualFlow, 0)
+proc newServerSession*(manualFlow = false; maxConcurrentStreams = 0): H2Session =
+  ## With `maxConcurrentStreams` > 0 the server announces that limit.
   ## With `manualFlow` nghttp2 sends no WINDOW_UPDATE by itself: the peer's
   ## window only reopens as the application calls `consume`, so a slow reader
   ## backpressures the sender instead of buffering without bound.
+  newSession(true, manualFlow, maxConcurrentStreams)
 
 proc consume*(s: H2Session; streamId: int32; n: int) =
   ## Reports `n` received DATA bytes as processed (manual flow control only).
@@ -328,6 +339,7 @@ proc sendData*(s: H2Session; streamId: int32; head, data: openArray[byte];
   let o = s.outStream(streamId)
   o.buf.appendBytes head
   o.buf.appendBytes data
+  s.queued += head.len + data.len
   if endStream: o.eof = true
   s.wake(streamId, o)
 
@@ -347,6 +359,10 @@ proc buffered*(s: H2Session; streamId: int32): int =
   ## Body bytes queued on `streamId` that nghttp2 has not framed yet.
   let o = s.outs.getOrDefault(streamId)
   if o != nil: o.buf.len - o.pos else: 0
+
+proc queuedBytes*(s: H2Session): int =
+  ## Body bytes queued on all streams that nghttp2 has not framed yet.
+  s.queued
 
 proc resetStream*(s: H2Session; streamId: int32; errorCode = NGHTTP2_CANCEL) =
   let rv = nghttp2_submit_rst_stream(s.raw, NGHTTP2_FLAG_NONE, streamId, errorCode)

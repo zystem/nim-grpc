@@ -22,7 +22,7 @@ import std/[locks, net, tables, deques, os, posix, atomics]
 import ./session, ./common, ../tls/tls, ../cleanup, ../bytebuf
 
 export session.Header, session.H2Error, net.Port, tls, common.H2Timeout,
-       common.H2StreamClosed, common.Keepalive, common.PingPolicy
+       common.H2StreamClosed, common.Keepalive, common.PingPolicy, common.Limits
 
 type
   StreamState = object
@@ -44,6 +44,7 @@ type
     wcond: Cond           ## the writer waits here, so a broadcast on `cond` does not wake it
     waiters: int          ## threads waiting on `cond`; nobody to wake means no broadcast
     outQBytes: int
+    maxBuffer: int        ## `Limits.maxConnectionBuffer`; 0 for no limit
     streams: Table[int32, StreamState]
     server: ptr ServerObj ## nil for a client connection
     lastDispatched: int32 ## server: highest stream id handed to a handler
@@ -110,6 +111,7 @@ type
     tls: TlsConfig        ## nil for plaintext
     ka: Keepalive
     policy: PingPolicy
+    limits: Limits
   Server* = ref ServerObj
 
   # ---- whole-request convenience API
@@ -587,7 +589,8 @@ proc sendLocked(c: ptr ConnObj; id: int32; head, data: openArray[byte]; endStrea
     let s = c.streamPtr(id)          # re-read: the table may grow while we wait
     if s == nil or s.closed or c.closed: raise c.closedError(s, id)
     if s.outEnded: raise newException(H2Error, "stream " & $id & ": body already ended")
-    let room = maxStreamBuffer - c.sess.buffered(id)
+    var room = maxStreamBuffer - c.sess.buffered(id)
+    if c.maxBuffer > 0: room = min(room, c.maxBuffer - c.sess.queuedBytes)
     let remaining = total - off
     if room > 0 or remaining == 0:
       let n = min(max(room, 0), remaining)
@@ -803,12 +806,14 @@ proc simpleTrampoline(st: var ServerStream; userData: pointer)
 proc newStreamServer*(handler: StreamHandler; userData: pointer = nil;
                       port = Port(0); address = "127.0.0.1";
                       maxWorkers = 256; tls: TlsConfig = nil;
-                      keepalive = Keepalive(); pingPolicy = PingPolicy()): Server =
+                      keepalive = Keepalive(); pingPolicy = PingPolicy();
+                      limits = Limits()): Server =
   ## Every request stream gets a worker thread for as long as its handler
   ## runs; the pool grows on demand up to `maxWorkers` threads. With `tls`
-  ## connections must speak TLS 1.2 with ALPN h2.
+  ## connections must speak TLS 1.2 with ALPN h2. `limits` caps streams,
+  ## connections and queued bytes (see `Limits`).
   result = Server(handler: handler, userData: userData, maxWorkers: maxWorkers,
-                  tls: tls, ka: keepalive, policy: pingPolicy)
+                  tls: tls, ka: keepalive, policy: pingPolicy, limits: limits)
   initLock(result.jobLock)
   initCond(result.jobCond)
   result.jobs = initDeque[Job]()
@@ -856,7 +861,12 @@ proc acceptLoop(s: ptr ServerObj) {.thread.} =
         break
       client.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
       s.reap()
-      let c = newConn(client, newServerSession(), s)
+      if s.limits.maxConnections > 0 and s.conns.len >= s.limits.maxConnections:
+        client.close()                 # over the limit: the peer sees a closed connection
+        continue
+      let c = newConn(client, newServerSession(
+        maxConcurrentStreams = s.limits.maxConcurrentStreams), s)
+      c.maxBuffer = s.limits.maxConnectionBuffer
       c.ka = s.ka
       c.policy = s.policy
       if s.tls != nil:

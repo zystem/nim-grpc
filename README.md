@@ -97,7 +97,11 @@ server sends GOAWAY. Calls still running on the old connection finish there.
 quiet connection and closes it if the PING goes unanswered. Servers take a
 `keepalive` too, and a `pingPolicy` (gRPC's enforcement: too frequent pings
 earn GOAWAY ENHANCE_YOUR_CALM "too_many_pings"). `srv.stop(graceMs = 5000)`
-sends GOAWAY and lets running calls finish before closing.
+sends GOAWAY and lets running calls finish before closing. Servers also take
+`limits = Limits(maxConcurrentStreams: 100, maxConnections: 5000)`: streams per
+connection (100 by default), connections (unlimited by default) and the bytes
+queued per connection (16 MiB). Set `maxConnections` on a server that faces
+untrusted clients.
 
 Cancellation: a handler's thread cannot be interrupted, and `stop` waits for
 handlers to return. Long handlers should therefore notice when their call is
