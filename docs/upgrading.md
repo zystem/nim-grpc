@@ -6,6 +6,8 @@ General steps: update the package (`nimble install grpc@X.Y.Z` or the new commit
 
 ## Unreleased
 
+- **Cipher order**: TLS now prefers AES-GCM on a CPU with AES-NI and PCLMULQDQ and ChaCha20-Poly1305 elsewhere (before: ChaCha20 first everywhere), and a server's order wins over the client's. The set of suites is unchanged, so every peer that connected before still connects. Pin the old order with `cipherOrder = coChaChaFirst`.
+
 - **Connect timeout**: `dial`, `dialAsync` and the reconnects of a channel give up on a server that does not accept the TCP connection after 20 seconds (`connectTimeoutMs`, UNAVAILABLE). Pass `connectTimeoutMs = -1` for the previous behaviour, or a smaller figure to fail faster. The name resolver is not bounded by it.
 - **TLS suites and certificates**: the library now negotiates only TLS 1.2 with ECDHE and AES-GCM or ChaCha20-Poly1305, and verifies certificates with RSA keys of 2048 bits or more and no MD5 or SHA-1 signatures. A peer or certificate that does not meet this fails the handshake. Reissue such certificates (a SHA-256 or better signature, an RSA key of 2048 bits or an EC key).
 

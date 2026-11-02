@@ -1,6 +1,6 @@
 ## TLS and mutual TLS.
 
-import std/[unittest, os, strutils]
+import std/[unittest, os, osproc, strutils]
 import grpc
 import ./interop/interop
 
@@ -79,6 +79,37 @@ suite "TLS":
       discard tlsServerConfig(pem"server.pem", "not a key")
     expect TlsError:
       discard tlsClientConfig("")
+
+suite "cipher order":
+  const orders = [coAuto, coAesGcmFirst, coChaChaFirst]
+
+  test "every combination of client and server order connects":
+    for serverOrder in orders:
+      for clientOrder in orders:
+        let srv = newTestServer(tls = tlsServerConfig(pem"server.pem", pem"server.key",
+                                                      cipherOrder = serverOrder))
+        srv.start()
+        let ch = dial("127.0.0.1", srv.port, tlsClientConfig(pem"ca.pem", cipherOrder = clientOrder),
+                      "localhost")
+        ch.echoOnce()
+        ch.close()
+        srv.stop()
+
+  test "the server's order decides which cipher is used":
+    if findExe("openssl").len == 0:
+      skip()
+    else:
+      for (order, expected) in [(coAesGcmFirst, "AES128-GCM-SHA256"),
+                                (coChaChaFirst, "CHACHA20-POLY1305")]:
+        let srv = newTestServer(tls = tlsServerConfig(pem"server.pem", pem"server.key",
+                                                      cipherOrder = order))
+        srv.start()
+        # openssl offers both families; the server chooses between them
+        let (output, _) = execCmdEx("echo | openssl s_client -connect 127.0.0.1:" & $srv.port.int &
+                                    " -tls1_2 -alpn h2 2>&1")
+        check ("Cipher is ECDHE-ECDSA-" & expected) in output or
+              ("Cipher    : ECDHE-ECDSA-" & expected) in output
+        srv.stop()
 
 suite "mutual TLS":
   var srv: GrpcServer

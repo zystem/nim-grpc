@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Cipher order of TLS: the same six suites (ECDHE with AES-128/256-GCM or ChaCha20-Poly1305), now ordered by the CPU. With AES-NI and PCLMULQDQ AES-GCM comes first, which was about 30% faster on large replies in `tools/tlsbench.nim` (33.5 MB/s with ChaCha20, 42-47 MB/s with AES-GCM, loopback, both ends in one process); otherwise ChaCha20 stays first, as BearSSL's portable AES is slow. A server now enforces its own order instead of following the client's. Choose with `cipherOrder` of `tlsServerConfig` / `tlsClientConfig` (`coAuto`, `coAesGcmFirst`, `coChaChaFirst`) or `setCipherOrder`.
+
 ### Fixed
 - `dial` and `dialAsync` blocked on connect for as long as the system's TCP timeout (minutes), with no way to bound it. Each connection attempt now gets `connectTimeoutMs`, 20 seconds by default; past it the call fails with UNAVAILABLE. A negative value keeps the old behaviour. Resolving the host name is not covered by the timeout.
 

@@ -133,6 +133,7 @@ typedef struct {
     br_ec_private_key ec;
     unsigned char *key_mem;        /* owns the key's byte arrays */
     int require_client_cert;
+    int cipher_order;              /* 0: by the CPU, 1: AES-GCM first, 2: ChaCha20 first */
     char err[160];
 } gtls_conf;
 
@@ -141,6 +142,8 @@ gtls_conf *gtls_conf_new(void) {
 }
 
 const char *gtls_conf_error(gtls_conf *c) { return c->err; }
+
+void gtls_conf_set_cipher_order(gtls_conf *c, int order) { c->cipher_order = order; }
 
 static void dn_append(void *ctx, const void *buf, size_t len) {
     gbuf_add((gbuf *)ctx, buf, len);
@@ -340,8 +343,18 @@ typedef struct {
 static const char *h2_name = "h2";
 
 /* Only forward-secret key agreement with an AEAD cipher. BearSSL's "full"
- * profiles also offer static RSA, CBC and 3DES suites; those are dropped. */
-static const uint16_t suites[] = {
+ * profiles also offer static RSA, CBC and 3DES suites; those are dropped.
+ * The same six suites in two orders: whichever cipher is first is the one
+ * chosen when both sides support it. */
+static const uint16_t suites_aes_first[] = {
+    BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+};
+static const uint16_t suites_chacha_first[] = {
     BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
     BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
@@ -349,6 +362,19 @@ static const uint16_t suites[] = {
     BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
     BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 };
+#define N_SUITES (sizeof suites_aes_first / sizeof suites_aes_first[0])
+
+/* AES-GCM is fast only with hardware help (AES-NI and PCLMULQDQ); BearSSL's
+ * portable AES is constant-time and slow, where ChaCha20 stays fast. */
+static int aes_gcm_is_fast(void) {
+    return br_aes_x86ni_ctr_get_vtable() != NULL && br_ghash_pclmul_get() != NULL;
+}
+
+static int aes_first(const gtls_conf *c) {
+    if (c->cipher_order == 1) return 1;
+    if (c->cipher_order == 2) return 0;
+    return aes_gcm_is_fast();
+}
 
 static void setup_common(gtls_conn *t, gtls_conf *c) {
     br_x509_minimal_init_full(&t->x509, c->tas, c->ta_num);
@@ -357,7 +383,9 @@ static void setup_common(gtls_conn *t, gtls_conf *c) {
     br_x509_minimal_set_minrsa(&t->x509, 256);
     br_x509_minimal_set_hash(&t->x509, br_md5_ID, NULL);
     br_x509_minimal_set_hash(&t->x509, br_sha1_ID, NULL);
-    br_ssl_engine_set_suites(t->eng, suites, sizeof suites / sizeof suites[0]);
+    br_ssl_engine_set_suites(t->eng, aes_first(c) ? suites_aes_first : suites_chacha_first, N_SUITES);
+    /* A server knows its own CPU: its order decides, not the client's. */
+    if (t->is_server) br_ssl_engine_add_flags(t->eng, BR_OPT_ENFORCE_SERVER_PREFERENCES);
     t->watch.vtable = &x509_watch_vtable;
     t->watch.inner = &t->x509.vtable;
     br_ssl_engine_set_x509(t->eng, &t->watch.vtable);

@@ -24,6 +24,7 @@ proc gtls_conf_add_ca(c: GtlsConfP; pem: ptr byte; len: csize_t): clong
 proc gtls_conf_set_identity(c: GtlsConfP; chain: ptr byte; chainLen: csize_t;
                             key: ptr byte; keyLen: csize_t): cint
 proc gtls_conf_require_client_cert(c: GtlsConfP; on: cint)
+proc gtls_conf_set_cipher_order(c: GtlsConfP; order: cint)
 proc gtls_conf_free(c: GtlsConfP)
 proc gtls_client_new(c: GtlsConfP; serverName: cstring): GtlsConnP
 proc gtls_server_new(c: GtlsConfP): GtlsConnP
@@ -68,6 +69,15 @@ proc `=copy`(dst: var TlsConnObj; src: TlsConnObj) {.error.}
 proc bytesOf(s: string): ptr byte =
   if s.len > 0: cast[ptr byte](s[0].unsafeAddr) else: nil
 
+type
+  CipherOrder* = enum
+    ## Which cipher a connection prefers when both ends support several. All
+    ## three orders offer the same suites (ECDHE with AES-128/256-GCM or
+    ## ChaCha20-Poly1305); only the order differs.
+    coAuto        ## AES-GCM first on a CPU with AES-NI and PCLMULQDQ, else ChaCha20
+    coAesGcmFirst
+    coChaChaFirst
+
 proc newTlsConfig*(): TlsConfig =
   result = TlsConfig(raw: gtls_conf_new())
   if result.raw.isNil: raise newException(TlsError, "out of memory")
@@ -86,19 +96,30 @@ proc setIdentity*(c: TlsConfig; certChainPem, privateKeyPem: string) =
                             privateKeyPem.bytesOf, privateKeyPem.len.csize_t) != 0:
     c.fail("identity")
 
+proc setCipherOrder*(c: TlsConfig; order: CipherOrder) =
+  ## The preferred cipher. On a server this order decides, whatever the client
+  ## prefers; on a client it is the order offered. `coAuto` (the default)
+  ## picks AES-GCM where the CPU does it in hardware, which is faster, and
+  ## ChaCha20-Poly1305 elsewhere, where BearSSL's portable AES is slow.
+  gtls_conf_set_cipher_order(c.raw, cint(ord(order)))
+
 proc requireClientCert*(c: TlsConfig; on = true) =
   ## Server: refuse clients without a certificate that chains to a trusted CA.
   gtls_conf_require_client_cert(c.raw, cint(on))
 
-proc tlsClientConfig*(caPem: string; certChainPem = ""; privateKeyPem = ""): TlsConfig =
+proc tlsClientConfig*(caPem: string; certChainPem = ""; privateKeyPem = "";
+                      cipherOrder = coAuto): TlsConfig =
   ## A client trusting `caPem`; with a chain and key it also authenticates itself.
   result = newTlsConfig()
+  result.setCipherOrder(cipherOrder)
   result.addTrustedCa(caPem)
   if certChainPem.len > 0: result.setIdentity(certChainPem, privateKeyPem)
 
-proc tlsServerConfig*(certChainPem, privateKeyPem: string; clientCaPem = ""): TlsConfig =
+proc tlsServerConfig*(certChainPem, privateKeyPem: string; clientCaPem = "";
+                      cipherOrder = coAuto): TlsConfig =
   ## A server; with `clientCaPem` clients must present a certificate it signed.
   result = newTlsConfig()
+  result.setCipherOrder(cipherOrder)
   result.setIdentity(certChainPem, privateKeyPem)
   if clientCaPem.len > 0:
     result.addTrustedCa(clientCaPem)

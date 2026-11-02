@@ -14,7 +14,7 @@ import std/[strutils, options]
 import pkg/chronos
 import ./status, ./wire, ./h2/async, ./compress/gzip
 export status, options, async.TlsConfig, async.tlsClientConfig, async.TlsError,
-       async.Keepalive
+       async.Keepalive, async.CipherOrder, async.setCipherOrder
 
 const userAgent = "grpc-nim/0.0.1"
 

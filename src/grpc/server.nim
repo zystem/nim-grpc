@@ -15,7 +15,8 @@
 import std/[tables, strutils]
 import ./status, ./wire, ./h2/blocking, ./compress/gzip
 export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig,
-       blocking.TlsError, blocking.Keepalive, blocking.PingPolicy
+       blocking.TlsError, blocking.Keepalive, blocking.PingPolicy, blocking.CipherOrder,
+       blocking.setCipherOrder
 
 type
   ServerContext* = object
