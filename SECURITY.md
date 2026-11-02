@@ -1,6 +1,6 @@
 # Security policy
 
-nim-grpc parses bytes from the network (HTTP/2, TLS, gRPC framing, Protobuf), so a report of a weakness is welcome and is read first.
+nimgrpc parses bytes from the network (HTTP/2, TLS, gRPC framing, Protobuf), so a report of a weakness is welcome and is read first.
 
 ## Reporting
 

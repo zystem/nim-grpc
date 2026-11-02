@@ -1,6 +1,6 @@
 # Threat model
 
-nim-grpc is a library: it runs inside the program of its user, as a gRPC client, as a server, or both. It holds no keys or data of its own except what TLS needs for a connection (the private key given by the program). What it protects is the program that links it.
+nimgrpc is a library: it runs inside the program of its user, as a gRPC client, as a server, or both. It holds no keys or data of its own except what TLS needs for a connection (the private key given by the program). What it protects is the program that links it.
 
 ## Assets
 

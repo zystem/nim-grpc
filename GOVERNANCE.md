@@ -1,6 +1,6 @@
 # Governance
 
-nim-grpc is a small project with one maintainer (the owner of the repository). This file says how it is run, so that a contributor knows what to expect and a user knows what the controls are.
+nimgrpc is a small project with one maintainer (the owner of the repository). This file says how it is run, so that a contributor knows what to expect and a user knows what the controls are.
 
 ## Members and roles
 

@@ -5,7 +5,7 @@
 Requirements: Nim 2.2.12 or later (tested on 2.2.12 and 2.2.14), a C compiler, [nim-bearssl](https://github.com/status-im/nim-bearssl) (`nimble install bearssl`; BearSSL is compiled from source), zlib (`-lz`, or `-d:zlibStatic`), nghttp2 linked statically, and [chronos](https://github.com/status-im/nim-chronos) for the async API.
 
 ```sh
-git clone https://github.com/zystem/nim-grpc && cd nim-grpc
+git clone https://github.com/zystem/nimgrpc && cd nimgrpc
 nimble install -y --depsOnly
 # nghttp2, once (the same steps as the CI, .github/workflows/ci.yml):
 curl -LO https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.xz

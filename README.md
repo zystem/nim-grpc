@@ -1,4 +1,4 @@
-# nim-grpc
+# nimgrpc
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16176/badge)](https://www.bestpractices.dev/projects/16176)
 
