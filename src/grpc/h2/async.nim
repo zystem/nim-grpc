@@ -551,18 +551,27 @@ proc release*(st: AsyncH2Stream) =
 
 # ------------------------------------------------------------ client
 
+const defaultConnectTimeoutMs* = 20_000
+  ## How long `dial` waits for each address to accept the TCP connection.
+
 proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = "";
-           keepalive = Keepalive()): Future[AsyncH2Conn] {.async.} =
+           keepalive = Keepalive(); connectTimeoutMs = defaultConnectTimeoutMs):
+          Future[AsyncH2Conn] {.async.} =
   ## Without `tls`: HTTP/2 with prior knowledge (h2c). With it: TLS 1.2,
   ## ALPN h2, the server's certificate checked against `serverName` (default
   ## `host`). A failed handshake shows up as an error on the first stream.
+  ## Each address gets `connectTimeoutMs` to accept the TCP connection (a
+  ## negative value waits as long as the system does); past it the last
+  ## address's `AsyncTimeoutError` is raised.
   let addrs = resolveTAddress(host, port)
   if addrs.len == 0: raise newException(TransportError, "cannot resolve " & host)
   var transp: StreamTransport
   var lastErr: ref CatchableError
   for a in addrs:
     try:
-      transp = await connect(a, flags = {SocketFlags.TcpNoDelay})
+      let attempt = connect(a, flags = {SocketFlags.TcpNoDelay})
+      transp = if connectTimeoutMs >= 0: await attempt.wait(connectTimeoutMs.milliseconds)
+               else: await attempt
       break
     except CancelledError as e:
       raise e

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `dial` and `dialAsync` blocked on connect for as long as the system's TCP timeout (minutes), with no way to bound it. Each connection attempt now gets `connectTimeoutMs`, 20 seconds by default; past it the call fails with UNAVAILABLE. A negative value keeps the old behaviour. Resolving the host name is not covered by the timeout.
+
 ### Changed
 - CI tests on Nim 2.2.12 (the floor of `grpc.nimble`) and 2.2.14; the soak test runs on 2.2.14. Renovate proposes new Nim versions (`renovate.json`), which Dependabot cannot see.
 

@@ -203,3 +203,44 @@ suite "compression":
                           compression = "gzip", timeoutMs = 5000)
     check r.payload.body.len == 50_000
     ch.close()
+
+when defined(linux):
+  import std/[net, times]
+
+  proc stuckListener(): tuple[lst: Socket, port: Port, fillers: seq[Socket]] =
+    ## A listener that never accepts, with its queue full: the kernel then drops
+    ## further SYNs, so a connect to it hangs.
+    result.lst = newSocket()
+    result.lst.setSockOpt(OptReuseAddr, true)
+    result.lst.bindAddr(Port(0), "127.0.0.1")
+    result.lst.listen(1)
+    result.port = result.lst.getLocalAddr()[1]
+    for _ in 0 ..< 8:
+      let s = newSocket()
+      try:
+        s.connect("127.0.0.1", result.port, 200)
+        result.fillers.add s
+      except CatchableError:
+        s.close()
+        return                      # the queue is full
+
+  proc closeAll(l: tuple[lst: Socket, port: Port, fillers: seq[Socket]]) =
+    for s in l.fillers: s.close()
+    l.lst.close()
+
+  suite "connect timeout":
+    test "dial gives up on a server that never accepts":
+      let stuck = stuckListener()
+      defer: closeAll(stuck)
+      if stuck.fillers.len >= 8:
+        skip()
+      else:
+        let started = epochTime()
+        var code = scOk
+        try:
+          discard dial("127.0.0.1", stuck.port.int, connectTimeoutMs = 300)
+        except GrpcError as e:
+          code = e.code
+        let took = epochTime() - started
+        check code == scUnavailable
+        check took >= 0.25 and took < 3.0

@@ -26,6 +26,7 @@ type
     tls*: TlsConfig
     serverName*: string
     keepalive: Keepalive
+    connectTimeoutMs: int
     authority: string
     scheme: string
     conn: Conn              ## the connection new calls use
@@ -58,20 +59,23 @@ type
 proc connect(c: ptr ChannelObj): Conn =
   var why = ""
   try:
-    result = blocking.dial(c.host, Port(c.port), c.tls, c.serverName, c.keepalive)
+    result = blocking.dial(c.host, Port(c.port), c.tls, c.serverName, c.keepalive,
+                           c.connectTimeoutMs)
   except CatchableError as e:
     why = e.msg
   if why.len > 0: raise newGrpcError(scUnavailable, why)
 
 proc dial*(host: string; port: int; tls: TlsConfig = nil; serverName = "";
-           keepalive = Keepalive()): GrpcChannel =
+           keepalive = Keepalive();
+           connectTimeoutMs = blocking.defaultConnectTimeoutMs): GrpcChannel =
   ## Without `tls`: plaintext HTTP/2 (h2c) with prior knowledge. With it:
   ## TLS 1.2 with ALPN h2; the server certificate must match `serverName`
   ## (default `host`; DNS names only, so use a name such as "localhost"
   ## rather than an IP address). Connects right away and raises
   ## GrpcError(UNAVAILABLE) if the server cannot be reached; a failed
   ## handshake is reported by the first call. Later connections are made on
-  ## demand.
+  ## demand. Each attempt to connect gets `connectTimeoutMs` (20 s by default;
+  ## negative: no limit beyond the system's) and fails with UNAVAILABLE past it.
   let c = createShared(ChannelObj)
   initLock(c.lock)
   c.host = host
@@ -79,6 +83,7 @@ proc dial*(host: string; port: int; tls: TlsConfig = nil; serverName = "";
   c.tls = tls
   c.serverName = serverName
   c.keepalive = keepalive
+  c.connectTimeoutMs = connectTimeoutMs
   c.authority = (if serverName.len > 0: serverName else: host) & ":" & $port
   c.scheme = if tls != nil: "https" else: "http"
   var why: ref GrpcError

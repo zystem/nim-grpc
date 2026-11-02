@@ -25,6 +25,7 @@ type
     tls*: TlsConfig
     serverName*: string
     keepalive: Keepalive
+    connectTimeoutMs: int
     authority: string
     scheme: string
     conn: AsyncH2Conn             ## the connection new calls use
@@ -56,7 +57,8 @@ proc connect(ch: AsyncChannel): Future[AsyncH2Conn] {.
     async: (raises: [CancelledError, GrpcError]).} =
   var why = ""
   try:
-    return await async.dial(ch.host, Port(ch.port), ch.tls, ch.serverName, ch.keepalive)
+    return await async.dial(ch.host, Port(ch.port), ch.tls, ch.serverName, ch.keepalive,
+                             ch.connectTimeoutMs)
   except CancelledError as e:
     raise e
   except CatchableError as e:
@@ -64,13 +66,16 @@ proc connect(ch: AsyncChannel): Future[AsyncH2Conn] {.
   raise newGrpcError(scUnavailable, why)
 
 proc dialAsync*(host: string; port: int; tls: TlsConfig = nil; serverName = "";
-                keepalive = Keepalive()): Future[AsyncChannel] {.async.} =
+                keepalive = Keepalive();
+                connectTimeoutMs = async.defaultConnectTimeoutMs): Future[AsyncChannel] {.async.} =
   ## Without `tls`: plaintext HTTP/2 (h2c). With it: TLS 1.2 with ALPN h2,
   ## the server certificate checked against `serverName` (default `host`).
   ## Connects right away and raises GrpcError(UNAVAILABLE) if the server
-  ## cannot be reached; later connections are made on demand.
+  ## cannot be reached; later connections are made on demand. Each attempt
+  ## to connect gets `connectTimeoutMs` (20 s by default; negative: no limit
+  ## beyond the system's) and fails with UNAVAILABLE past it.
   let ch = AsyncChannel(host: host, port: port, tls: tls, serverName: serverName,
-                        keepalive: keepalive,
+                        keepalive: keepalive, connectTimeoutMs: connectTimeoutMs,
                         authority: (if serverName.len > 0: serverName else: host) & ":" & $port,
                         scheme: if tls != nil: "https" else: "http")
   ch.conn = await ch.connect()
