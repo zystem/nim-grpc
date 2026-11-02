@@ -105,7 +105,7 @@ proc setCipherOrder*(c: TlsConfig; order: CipherOrder) =
   ## ChaCha20-Poly1305 elsewhere, where BearSSL's portable AES is slow.
   gtls_conf_set_cipher_order(c.raw, cint(ord(order)))
 
-const defaultSessionLifetime* = 3600
+const defaultSessionLifetime* = 600
 
 proc setSessionLifetime*(c: TlsConfig; seconds: int) =
   ## How long a TLS session may be resumed, which skips the public-key work of
@@ -114,7 +114,7 @@ proc setSessionLifetime*(c: TlsConfig; seconds: int) =
   ## offers the last one for the same server name for as long; 0 turns
   ## resumption off. A resumed session is not checked against the certificate
   ## again, so this is also how long a revoked or expired certificate still
-  ## works for a client that already has a session. Default one hour.
+  ## works for a client that already has a session. Default ten minutes.
   gtls_conf_set_lifetime(c.raw, cint(seconds))
 
 proc requireClientCert*(c: TlsConfig; on = true) =

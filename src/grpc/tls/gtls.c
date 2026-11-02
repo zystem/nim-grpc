@@ -146,7 +146,7 @@ typedef struct {
     char err[160];
 } gtls_conf;
 
-#define DEFAULT_LIFETIME 3600
+#define DEFAULT_LIFETIME 600
 #define CACHE_BYTES (128 * 1024)
 
 static long long now_s(void) {
