@@ -6,6 +6,13 @@ General steps: update the package (`nimble install grpc@X.Y.Z` or the new commit
 
 ## Unreleased
 
+## 0.0.2
+
+- **Session resumption**: a `TlsConfig` now resumes TLS sessions for ten minutes (`setSessionLifetime`, 0 turns it off). A resumed session is not checked against the certificate again, so a revoked or expired certificate keeps working for a peer that holds a session until the lifetime ends. If revocation must take effect at once, set the lifetime to 0 or restart the server. Reuse one `TlsConfig` for the channels to one server to get the benefit.
+- **HTTP/2 window**: every connection now announces 1 MiB per stream and per connection (before: 64 KiB). A peer can leave up to 1 MiB unread on a connection, about 5 MB more resident memory per busy process in our measurements; large messages are 20-40% faster.
+- **Server and unfinished requests**: a chronos server resets a stream with NO_ERROR once its response is complete and the client is still sending; the client's `send` then raises the server's status instead of waiting.
+- **`send` takes `sink`**: `send` of the async client, server and `AsyncH2Stream` moves its message when the caller does not use it again (no source change needed); keep a copy if you read the variable afterwards.
+
 - **Cipher order**: TLS now prefers AES-GCM on a CPU with AES-NI and PCLMULQDQ and ChaCha20-Poly1305 elsewhere (before: ChaCha20 first everywhere), and a server's order wins over the client's. The set of suites is unchanged, so every peer that connected before still connects. Pin the old order with `cipherOrder = coChaChaFirst`.
 
 - **Connect timeout**: `dial`, `dialAsync` and the reconnects of a channel give up on a server that does not accept the TCP connection after 20 seconds (`connectTimeoutMs`, UNAVAILABLE). Pass `connectTimeoutMs = -1` for the previous behaviour, or a smaller figure to fail faster. The name resolver is not bounded by it.

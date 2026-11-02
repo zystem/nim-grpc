@@ -2,14 +2,17 @@
 
 ## Unreleased
 
-### Changed
-- Cipher order of TLS: the same six suites (ECDHE with AES-128/256-GCM or ChaCha20-Poly1305), now ordered by the CPU. With AES-NI and PCLMULQDQ AES-GCM comes first, which was about 30% faster on large replies in `tools/tlsbench.nim` (33.5 MB/s with ChaCha20, 42-47 MB/s with AES-GCM, loopback, both ends in one process); otherwise ChaCha20 stays first, as BearSSL's portable AES is slow. A server now enforces its own order instead of following the client's. Choose with `cipherOrder` of `tlsServerConfig` / `tlsClientConfig` (`coAuto`, `coAesGcmFirst`, `coChaChaFirst`) or `setCipherOrder`.
+## 0.0.2 — 2026-11-03
 
 ### Added
 - TLS session resumption (session ids), on by default for ten minutes: `setSessionLifetime(config, seconds)`, 0 to turn it off. A reconnect of a channel with the same `TlsConfig` and server name skips the public-key work: new connection plus first call (`tools/hsbench.nim`) 4.9 ms to 0.9 ms with TLS and 6.9 ms to 0.6 ms with mutual TLS. The server keeps only sessions of peers that were authenticated as required, and drops its cache as a whole when the lifetime has passed. A resumed session is not checked against the certificate again, so a revoked or expired certificate keeps working for a peer that holds a session until the lifetime ends (see `docs/security-requirements.md`).
+- Scheduled long checks: a weekly mutation fuzzer over the parsers (`tools/fuzz.nim`, `fuzz.yml`), a nightly ThreadSanitizer run of the whole suite (`tsan.yml`) and a weekly heap profile of the server with its summary (`tools/profile.sh`, `profile.yml`). A shared setup action (`.github/actions/setup`) builds nghttp2 and Nim for them.
+- Weekly soak test of the chronos server (`tools/soak.sh`, `.github/workflows/soak.yml`): memory per connection and no growth under churn, plain and TLS. `tools/asyncload.nim` gained `hold`, `churn` and `tls` modes.
 
 ### Changed
+- Cipher order of TLS: the same six suites (ECDHE with AES-128/256-GCM or ChaCha20-Poly1305), now ordered by the CPU. With AES-NI and PCLMULQDQ AES-GCM comes first, which was about 30% faster on large replies in `tools/tlsbench.nim` (33.5 MB/s with ChaCha20, 42-47 MB/s with AES-GCM, loopback, both ends in one process); otherwise ChaCha20 stays first, as BearSSL's portable AES is slow. A server now enforces its own order instead of following the client's. Choose with `cipherOrder` of `tlsServerConfig` / `tlsClientConfig` (`coAuto`, `coAesGcmFirst`, `coChaChaFirst`) or `setCipherOrder`.
 - Fewer copies of a message. On receipt `wire.MsgBuf` (replacing `takeFrame` and `appendData`, which were internal) builds the message straight from the chunks as they arrive, instead of collecting them in a buffer and slicing the message out; a declared length reserves nothing, memory grows with the bytes received. On sending, the 5-byte frame prefix goes in front of the message in the stream buffer (`head` of `sendData` / `send`), so `encodeMessage` is no longer called for each message. Measured in pinned runs (`taskset`, `tools/tlsbench.nim`): 64 KiB over TLS about 4% faster, 1 MiB 1-2%, small messages unchanged.
+- CI tests on Nim 2.2.12 (the floor of `grpc.nimble`) and 2.2.14; the soak test runs on 2.2.14. Renovate proposes new Nim versions (`renovate.json`), which Dependabot cannot see.
 
 ### Fixed
 - A new TLS connection took about twice as long as it had to: BearSSL's "full" profiles verify certificate signatures with the generic prime_i31 code, which was about 60% of a handshake. Certificates and the handshake now use the fast P-256 code (m64 where the CPU has 64x64->128 multiplication, m31 otherwise). New connection plus first call, `tools/hsbench.nim`: TLS 7.7 to 4.2 ms, mutual TLS 9.5 to 5.7 ms.
@@ -19,13 +22,6 @@
 - Every connection advertised the default HTTP/2 window of 64 KiB per stream and per connection, so a large message waited for the peer's WINDOW_UPDATE every 64 KiB, each one a hand-off between threads and a few system calls. A session now announces a window of 1 MiB for each stream and for the connection (`receiveWindow`, `src/grpc/h2/session.nim`), which is also the most unread data a peer can make us hold per connection. CiNim's `shimtransport` (loopback, pinned): 900 KB requests 4.5 to 2.8 ms, 64 KiB 0.34 to 0.28 ms, CPU of the client and the server for the series about 1.1 to 0.85 s (ZeroMQ + CURVE 0.7-0.8 s); `futex` calls of the client for 200 requests of 900 KB 139 000 to 62 000. A larger maximum frame size and a larger socket read buffer were tried and gave nothing.
 - A client that sent a large message to a call the chronos server had already ended without reading the request waited forever: the server never told it to stop. The server now resets such a stream with NO_ERROR once its response is complete (as other gRPC servers do), and the client's `send` raises the server's status.
 - `dial` and `dialAsync` blocked on connect for as long as the system's TCP timeout (minutes), with no way to bound it. Each connection attempt now gets `connectTimeoutMs`, 20 seconds by default; past it the call fails with UNAVAILABLE. A negative value keeps the old behaviour. Resolving the host name is not covered by the timeout.
-
-### Changed
-- CI tests on Nim 2.2.12 (the floor of `grpc.nimble`) and 2.2.14; the soak test runs on 2.2.14. Renovate proposes new Nim versions (`renovate.json`), which Dependabot cannot see.
-
-### Added
-- Scheduled long checks: a weekly mutation fuzzer over the parsers (`tools/fuzz.nim`, `fuzz.yml`), a nightly ThreadSanitizer run of the whole suite (`tsan.yml`) and a weekly heap profile of the server with its summary (`tools/profile.sh`, `profile.yml`). A shared setup action (`.github/actions/setup`) builds nghttp2 and Nim for them.
-- Weekly soak test of the chronos server (`tools/soak.sh`, `.github/workflows/soak.yml`): memory per connection and no growth under churn, plain and TLS. `tools/asyncload.nim` gained `hold`, `churn` and `tls` modes.
 
 ## 0.0.1 — 2026-11-02
 
