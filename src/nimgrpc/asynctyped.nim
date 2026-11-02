@@ -1,5 +1,5 @@
 ## Typed calls on chronos, for generated service code (the async twin of
-## `grpc/typed`). Message types provide `encode` and `decode` as for the
+## `nimgrpc/typed`). Message types provide `encode` and `decode` as for the
 ## blocking API.
 
 import pkg/chronos

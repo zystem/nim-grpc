@@ -2,7 +2,7 @@
 ##
 ##   hsbench [N] [mtls] [noresume]        Build with -d:release.
 import std/[os, strutils, monotimes, times]
-import grpc
+import nimgrpc
 
 const certs = currentSourcePath.parentDir.parentDir / "tests" / "certs"
 proc pem(name: string): string = readFile(certs / name)

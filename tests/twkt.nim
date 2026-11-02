@@ -1,7 +1,7 @@
-## Well-known types: generated code against protoc, and the grpc/wkt helpers.
+## Well-known types: generated code against protoc, and the nimgrpc/wkt helpers.
 
 import std/[unittest, os, osproc, options, tables, times, json]
-import grpc/wkt
+import nimgrpc/wkt
 import ./gen/[wkt_use_pb, codec_pb]
 
 const dir = currentSourcePath.parentDir / "proto"
@@ -57,7 +57,7 @@ suite "well-known types in generated code":
   test "services may use well-known types":
     check compiles(newEventsClient(GrpcChannel()).ping(Empty()))
 
-suite "grpc/wkt helpers":
+suite "nimgrpc/wkt helpers":
   test "Timestamp <-> Time":
     let t = initTime(1761955200, 123456789)
     check t.toTimestamp == Timestamp(seconds: 1761955200, nanos: 123456789)

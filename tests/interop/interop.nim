@@ -1,12 +1,12 @@
-## Interop peer in Nim, on code generated from grpc/testing/test.proto
+## Interop peer in Nim, on code generated from nimgrpc/testing/test.proto
 ## (tests/gen): a grpc.testing.TestService server and a client running the
-## interop cases from grpc/grpc doc/interop-test-descriptions.md.
+## interop cases from nimgrpc/grpc doc/interop-test-descriptions.md.
 ##
 ##   interop server PORT [--tls|--mtls] [--certs=DIR]
 ##   interop client HOST PORT [CASES] [--tls|--mtls] [--certs=DIR] [--lenient-compression]
 
 import std/strutils
-import grpc, grpc/cleanup
+import nimgrpc, nimgrpc/cleanup
 import ../gen/grpc/testing/test_pb
 
 const

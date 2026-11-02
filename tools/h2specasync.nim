@@ -4,7 +4,7 @@
 
 import std/[os, strutils]
 import pkg/chronos
-import grpc/h2/async
+import nimgrpc/h2/async
 
 proc handler(st: AsyncH2Stream; ud: pointer): Future[void] {.async.} =
   while (await st.recvData()).len > 0: discard     # read the whole request

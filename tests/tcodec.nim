@@ -6,7 +6,7 @@
 ## must also decode, in protoc, to the same text as the original.
 
 import std/[unittest, os, osproc, options, tables, math, sequtils]
-import grpc/[protobuf, bytebuf, wire, status]
+import nimgrpc/[protobuf, bytebuf, wire, status]
 import ./gen/[codec_pb, legacy_pb]
 
 const dir = currentSourcePath.parentDir / "proto"

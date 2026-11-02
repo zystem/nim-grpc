@@ -11,7 +11,7 @@
 
 import std/[os, strutils, options]
 import pkg/chronos
-import grpc/[asyncclient, asyncserver]
+import nimgrpc/[asyncclient, asyncserver]
 
 const certs = currentSourcePath.parentDir.parentDir / "tests" / "certs"
 proc pem(name: string): string = readFile(certs / name)

@@ -1,8 +1,8 @@
 ## TLS and mutual TLS.
 
 import std/[unittest, os, osproc, strutils]
-import grpc
-import grpc/tls/tls as rawtls
+import nimgrpc
+import nimgrpc/tls/tls as rawtls
 import ./interop/interop
 
 const certs = currentSourcePath.parentDir / "certs"

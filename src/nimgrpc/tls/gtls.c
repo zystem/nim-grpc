@@ -1,5 +1,5 @@
 /*
- * I/O-free TLS on BearSSL for nim-grpc.
+ * I/O-free TLS on BearSSL for nimgrpc.
  *
  * A gtls_conf holds what is shared by many connections and never changes once
  * built: trust anchors, our certificate chain and private key, and whether a

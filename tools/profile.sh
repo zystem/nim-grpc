@@ -39,6 +39,6 @@ peak=$(awk -F': ' '/peak heap memory consumption/ {print $2}' "$OUT/report.txt")
   awk '/^PEAK MEMORY CONSUMERS/{f=1} f' "$OUT/report.txt" | awk '
     /peak memory consumed over/ { if (hdr!="") print "  " hdr " | " leaf " | " src; hdr=$0; sub(/ from$/,"",hdr); leaf=""; src=""; next }
     hdr!="" && leaf=="" && /^[A-Za-z_][^ ]*$/ { leaf=substr($0,1,48); next }
-    /nim-grpc\/(src|tools)/ && src=="" { sub(/^ *at .*nim-grpc\//,""); src=$0 }
+    /(nim-grpc|nimgrpc)\/(src|tools)/ && src=="" { sub(/^ *at .*(nim-grpc|nimgrpc)\//,""); src=$0 }
     END { if (hdr!="") print "  " hdr " | " leaf " | " src }' | head -12
 } | tee "$OUT/summary.txt"

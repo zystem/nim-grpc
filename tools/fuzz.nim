@@ -16,9 +16,9 @@
 ## (libFuzzer, ClusterFuzzLite) is on the roadmap.
 
 import std/[os, strutils, random, times]
-import grpc/[wire, status, protobuf]
-import grpc/compress/gzip
-import grpc/h2/session
+import nimgrpc/[wire, status, protobuf]
+import nimgrpc/compress/gzip
+import nimgrpc/h2/session
 import ../tests/gen/[codec_pb, legacy_pb, wkt_use_pb]
 
 const protoDir = currentSourcePath.parentDir.parentDir / "tests" / "proto"

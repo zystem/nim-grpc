@@ -1,6 +1,6 @@
 ## gRPC server on chronos.
 ##
-## The async twin of `grpc/server`. Every call runs as a future on the event
+## The async twin of `nimgrpc/server`. Every call runs as a future on the event
 ## loop from the moment its HEADERS arrive, so thousands of calls cost no
 ## threads. Handlers are closures:
 ##

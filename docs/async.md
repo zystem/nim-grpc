@@ -1,13 +1,13 @@
 # gRPC on chronos
 
-`grpc/asyncclient`, `grpc/asyncserver` and `grpc/asynctyped` are the
+`nimgrpc/asyncclient`, `nimgrpc/asyncserver` and `nimgrpc/asynctyped` are the
 [chronos](https://github.com/status-im/nim-chronos) twins of the blocking API.
 They run on the same HTTP/2 core, TLS engine, codec and gzip; only the I/O
-adapter differs (`grpc/h2/async`).
+adapter differs (`nimgrpc/h2/async`).
 
 ## When to use which
 
-| | blocking (`grpc`) | chronos (`grpc/asynctyped`) |
+| | blocking (`nimgrpc`) | chronos (`nimgrpc/asynctyped`) |
 |:---|:---|:---|
 | Per connection | a reader and a writer task on a shared thread pool | three futures on the event loop |
 | Per call (server) | a worker thread for as long as the handler runs | a future |
@@ -24,7 +24,7 @@ The two speak the same protocol and interoperate in both directions.
 
 ```nim
 import pkg/chronos
-import grpc/asynctyped, gen/helloworld_pb      # generated with --nim_opt=async
+import nimgrpc/asynctyped, gen/helloworld_pb      # generated with --nim_opt=async
 
 proc sayHello(ctx: AsyncServerContext; req: HelloRequest): Future[HelloReply] {.async.} =
   await sleepAsync(10.milliseconds)            # cancelled if the call ends first
@@ -138,7 +138,7 @@ Linux x86-64, `-d:release`, one thread (`tools/asyncload.nim`):
   sequences (read and write buffers and queues); about 5 KiB Nim objects (futures, streams,
   the connection); 2.8 KiB the nghttp2 session itself; 1 KiB each for the HPACK encoder
   and decoder tables. With TLS the connection grows to about 84 KiB, of which 40 KiB is
-  the BearSSL engine and its two record buffers (`gtls_conn`, `src/grpc/tls/gtls.c`).
+  the BearSSL engine and its two record buffers (`gtls_conn`, `src/nimgrpc/tls/gtls.c`).
   The frame buffer and the TLS record buffers are the two places to save memory.
   The connection reads straight from that buffer, with no buffer of its own.
 - 5,000 concurrent unary calls on one channel, and 1,000 concurrent streams on

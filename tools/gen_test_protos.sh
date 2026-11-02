@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regenerates tests/gen, tests/proto/*.bin and src/grpc/wkt. Needs protoc and grpc-proto:
+# Regenerates tests/gen, tests/proto/*.bin and src/nimgrpc/wkt. Needs protoc and grpc-proto:
 #   PROTOC=protoc GRPC_PROTO=path/to/grpc-proto tools/gen_test_protos.sh
 set -e
 cd "$(dirname "$0")/.."
@@ -17,8 +17,8 @@ $PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=tests/gen --nim_o
  $PROTOC --encode=codec.legacy.Legacy -I. legacy.proto < legacy.txtpb > legacy.bin &&
  $PROTOC --encode=codec.wkt.Event -I. wkt_use.proto < wkt.txtpb > wkt.bin)
 # The well-known types shipped in the package:
-rm -rf src/grpc/wkt/google && mkdir -p src/grpc/wkt
-$PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=src/grpc/wkt \
+rm -rf src/nimgrpc/wkt/google && mkdir -p src/nimgrpc/wkt
+$PROTOC --plugin=protoc-gen-nim=tools/protoc-gen-nim --nim_out=src/nimgrpc/wkt \
   google/protobuf/any.proto google/protobuf/duration.proto google/protobuf/empty.proto \
   google/protobuf/field_mask.proto google/protobuf/struct.proto \
   google/protobuf/timestamp.proto google/protobuf/wrappers.proto \
