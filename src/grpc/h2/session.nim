@@ -13,7 +13,7 @@
 ## * Callbacks never let an exception cross into C: they are `raises: []`.
 
 import std/tables
-import ./nghttp2
+import ./nghttp2, ../bytebuf
 
 type
   H2Error* = object of CatchableError
@@ -105,9 +105,7 @@ proc onDataChunk(session: ptr Nghttp2Session; flags: uint8; streamId: int32;
                  {.cdecl, raises: [].} =
   let s = sess(userData)
   var acc = s.inData.mgetOrPut(streamId, @[]).addr
-  let start = acc[].len
-  acc[].setLen(start + len.int)
-  if len > 0: copyMem(acc[][start].addr, data, len.int)
+  acc[].appendBytes(data, len.int)
   0
 
 proc onFrameRecv(session: ptr Nghttp2Session; frame: ptr Nghttp2Frame;
@@ -252,9 +250,7 @@ proc takeOutput*(s: H2Session): seq[byte] =
     let n = nghttp2_session_mem_send2(s.raw, p.addr)
     if n < 0: raiseH2(n, "mem_send")
     if n == 0: break
-    let start = result.len
-    result.setLen(start + n)
-    copyMem(result[start].addr, p, n)
+    result.appendBytes(p, n.int)
 
 proc takeEvents*(s: H2Session): seq[H2Event] =
   result = move s.events
@@ -313,10 +309,7 @@ proc sendData*(s: H2Session; streamId: int32; data: openArray[byte];
                endStream = false) =
   ## Queues body bytes; nghttp2 frames them subject to flow control.
   let o = s.outStream(streamId)
-  if data.len > 0:
-    let start = o.buf.len
-    o.buf.setLen(start + data.len)
-    copyMem(o.buf[start].addr, data[0].unsafeAddr, data.len)
+  o.buf.appendBytes data
   if endStream: o.eof = true
   s.wake(streamId, o)
 

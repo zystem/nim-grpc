@@ -19,7 +19,7 @@
 ## count is touched from two threads.
 
 import std/[locks, net, tables, deques, os, posix, atomics]
-import ./session, ./common, ../tls/tls, ../cleanup
+import ./session, ./common, ../tls/tls, ../cleanup, ../bytebuf
 
 export session.Header, session.H2Error, net.Port, tls, common.H2Timeout,
        common.H2StreamClosed, common.Keepalive, common.PingPolicy
@@ -212,7 +212,7 @@ proc queueOutputLocked(c: ptr ConnObj) =
       c.outQBytes += o.len
       c.outQ.addLast o
   else:
-    c.plainOut.add o
+    c.plainOut.appendBytes o
     while true:
       var progressed = false
       if c.plainOut.len > 0:
@@ -282,7 +282,7 @@ proc handleEventsLocked(c: ptr ConnObj) =
     of evData:
       if known:
         let st = c.streamPtr(ev.streamId)
-        st.inbuf.add ev.data
+        st.inbuf.appendBytes ev.data
         if ev.dataEndStream: st.inEnded = true
     of evStreamClosed:
       if known:
@@ -355,7 +355,7 @@ proc readerLoop(c: ptr ConnObj) =
         if c.tls == nil:
           c.sess.recv(buf.toOpenArray(0, n - 1))
         else:
-          c.tlsIn.add buf.toOpenArray(0, n - 1)
+          c.tlsIn.appendBytes(buf[0].addr, n)
           c.pumpTlsInLocked()
         c.handleEventsLocked()
         c.queueOutputLocked()
@@ -746,7 +746,7 @@ proc readRequest*(st: var ServerStream): Request =
   ## Reads the whole request body.
   result.headers = st.headers
   var chunk: seq[byte]
-  while st.recvData(chunk): result.body.add chunk
+  while st.recvData(chunk): result.body.appendBytes chunk
 
 proc respond*(st: var ServerStream; rep: Reply) =
   if rep.headersOnly:
@@ -1074,7 +1074,7 @@ proc request*(c: Conn; headers: openArray[Header]; body: openArray[byte] = [];
       st.send(body, endStream = true)
       res.headers = st.recvHeaders()
       var chunk: seq[byte]
-      while st.recvData(chunk): res.body.add chunk
+      while st.recvData(chunk): res.body.appendBytes chunk
       res.trailers = st.recvTrailers()
     except H2StreamClosed as e:
       acquire(c.lock)

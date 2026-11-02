@@ -16,7 +16,7 @@
 
 import std/[tables, deques]
 import pkg/chronos
-import ./session, ./common, ../tls/tls
+import ./session, ./common, ../tls/tls, ../bytebuf
 
 export session.Header, session.H2Error, tls, common.H2Timeout,
        common.H2StreamClosed, common.Keepalive, common.PingPolicy
@@ -122,7 +122,7 @@ proc queueOutput(c: AsyncH2Conn; force = false) =
       c.outQBytes += o.len
       c.outQ.addLast o
   else:
-    c.plainOut.add o
+    c.plainOut.appendBytes o
     while true:
       var progressed = false
       if c.plainOut.len > 0:
@@ -216,7 +216,7 @@ proc handleEvents(c: AsyncH2Conn) =
         ns.handler = c.runHandler(ns)
     of evData:
       if st != nil and not st.released:
-        st.inbuf.add ev.data
+        st.inbuf.appendBytes ev.data
         if ev.dataEndStream: st.inEnded = true
         st.notify()
       else:
@@ -271,7 +271,7 @@ proc onBytes(c: AsyncH2Conn; data: openArray[byte]) =
     if c.tls == nil:
       c.sess.recv(data)
     else:
-      c.tlsIn.add data
+      c.tlsIn.appendBytes data
       c.pumpTlsIn()
     c.handleEvents()
     c.queueOutput()

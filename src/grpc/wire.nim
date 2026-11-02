@@ -3,7 +3,7 @@
 ## binary metadata and the reserved header names.
 
 import std/[base64, strutils]
-import ./status
+import ./status, ./bytebuf
 
 const
   defaultMaxMessage* = 4 * 1024 * 1024
@@ -14,7 +14,7 @@ const
 proc encodeMessage*(msg: openArray[byte]; compressed = false): seq[byte] =
   ## One message frame: flag byte (1 if `msg` is already compressed), 4-byte
   ## big-endian length, payload.
-  result = newSeq[byte](5 + msg.len)
+  result = newSeqUninit[byte](5 + msg.len)
   result[0] = byte(ord(compressed))
   let n = msg.len.uint32
   result[1] = byte(n shr 24)
@@ -60,7 +60,7 @@ proc takeFrame*(buf: var seq[byte]; pos: var int; maxLen: int;
     raise newGrpcError(scResourceExhausted,
       "message of " & $n & " bytes exceeds the limit of " & $maxLen)
   if avail < 5 + n: return false
-  payload = buf[pos + 5 ..< pos + 5 + n]
+  payload = sliceBytes(buf, pos + 5, n)
   compressed = flag == 1
   pos += 5 + n
   if pos == buf.len:
@@ -71,9 +71,11 @@ proc takeFrame*(buf: var seq[byte]; pos: var int; maxLen: int;
 proc appendData*(buf: var seq[byte]; pos: var int; chunk: openArray[byte]) =
   ## Appends received bytes, dropping the consumed prefix first.
   if pos > 0:
-    buf = buf[pos .. ^1]
+    let rest = buf.len - pos
+    moveMem(buf[0].addr, buf[pos].addr, rest)
+    buf.setLen(rest)
     pos = 0
-  buf.add chunk
+  buf.appendBytes chunk
 
 const supportedEncodings* = ["identity", "gzip"]
 const acceptEncodingHeader* = ("grpc-accept-encoding", "gzip")

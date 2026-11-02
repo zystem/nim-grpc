@@ -5,6 +5,7 @@
 ## connection that owns it under that connection's lock.
 
 import std/os
+import ../bytebuf
 import bearssl/abi/[bearssl_ssl, bearssl_x509, bearssl_pem, bearssl_ec,
                     bearssl_rsa, bearssl_hash, bearssl_rand]
 
@@ -184,7 +185,7 @@ proc pullApp*(t: TlsConn; dst: var seq[byte]) =
   while true:
     let n = gtls_pull_app(t.raw, buf[0].addr, buf.len.csize_t).int
     if n == 0: break
-    dst.add buf.toOpenArray(0, n - 1)
+    dst.appendBytes(buf[0].addr, n)
 
 proc pushApp*(t: TlsConn; data: openArray[byte]): int =
   ## Queues plaintext to send; returns how many bytes were taken (0 during the
@@ -204,6 +205,6 @@ proc pullRecords*(t: TlsConn): seq[byte] =
   while true:
     let n = gtls_pull_records(t.raw, buf[0].addr, buf.len.csize_t).int
     if n == 0: break
-    result.add buf.toOpenArray(0, n - 1)
+    result.appendBytes(buf[0].addr, n)
 
 proc close*(t: TlsConn) = gtls_close(t.raw)

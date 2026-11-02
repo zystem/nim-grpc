@@ -6,7 +6,7 @@
 ## must also decode, in protoc, to the same text as the original.
 
 import std/[unittest, os, osproc, options, tables, math]
-import grpc/protobuf
+import grpc/[protobuf, bytebuf, wire]
 import ./gen/[codec_pb, legacy_pb]
 
 const dir = currentSourcePath.parentDir / "proto"
@@ -156,3 +156,40 @@ suite "proto2 codec":
       skip()
     else:
       check protocDecode("codec.legacy.Legacy", "legacy.proto", m.encode) == a
+
+suite "byte buffers":
+  test "appendBytes keeps what is there and adds the rest":
+    var b = @[1'u8, 2]
+    b.appendBytes [3'u8, 4, 5]
+    b.appendBytes newSeq[byte]()
+    check b == @[1'u8, 2, 3, 4, 5]
+    var raw = [9'u8, 8]
+    b.appendBytes(raw[0].addr, 2)
+    b.appendBytes(nil, 0)
+    check b == @[1'u8, 2, 3, 4, 5, 9, 8]
+
+  test "frames split across chunks are reassembled":
+    let frames = encodeMessage([10'u8, 20, 30]) & encodeMessage([40'u8])
+    var buf: seq[byte]
+    var pos = 0
+    var got: seq[seq[byte]]
+    for i in 0 ..< frames.len:                  # one byte at a time
+      appendData(buf, pos, [frames[i]])
+      var payload: seq[byte]
+      var compressed: bool
+      while takeFrame(buf, pos, 1024, payload, compressed):
+        got.add payload
+    check got == @[@[10'u8, 20, 30], @[40'u8]]
+    check buf.len == 0 and pos == 0
+
+  test "a partial frame survives compaction":
+    let f = encodeMessage([1'u8, 2, 3, 4])
+    var buf: seq[byte]
+    var pos = 0
+    appendData(buf, pos, f[0 ..< 3])
+    var payload: seq[byte]
+    var compressed: bool
+    check not takeFrame(buf, pos, 1024, payload, compressed)
+    appendData(buf, pos, f[3 .. ^1])
+    check takeFrame(buf, pos, 1024, payload, compressed)
+    check payload == @[1'u8, 2, 3, 4]
