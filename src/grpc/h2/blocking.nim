@@ -909,15 +909,26 @@ proc activeStreams*(c: Conn): int =
   result = c.streams.len
   release(c.lock)
 
+const defaultConnectTimeoutMs* = 20_000
+  ## How long `dial` waits for each address to accept the TCP connection.
+
 proc dial*(host: string; port: Port; tls: TlsConfig = nil; serverName = "";
-           keepalive = Keepalive()): Conn =
+           keepalive = Keepalive(); connectTimeoutMs = defaultConnectTimeoutMs): Conn =
   ## Without `tls`: HTTP/2 with prior knowledge (h2c). With it: TLS 1.2,
   ## ALPN h2, the server's certificate checked against `serverName` (default:
   ## `host`; DNS names only). A failed handshake shows up as an error on the
-  ## first stream.
+  ## first stream. Each address the name resolves to gets `connectTimeoutMs`
+  ## to accept the TCP connection (a negative value waits as long as the
+  ## system does); past it `TimeoutError` is raised. Resolving the name is not
+  ## covered: it blocks for as long as the resolver takes.
   let sock = newSocket(buffered = false)
-  sock.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
-  sock.connect(host, port)
+  try:
+    sock.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
+    if connectTimeoutMs >= 0: sock.connect(host, port, connectTimeoutMs)
+    else: sock.connect(host, port)
+  except CatchableError as e:
+    sock.close()              # a socket that never connected must not keep its descriptor
+    raise e
   result = newConn(sock, newClientSession(), nil)
   result.ka = keepalive
   if tls != nil:

@@ -239,3 +239,41 @@ suite "async gRPC":
     while not done.load: waitFor sleepAsync(5.milliseconds)
     joinThread(th)
     check ok
+
+when defined(linux):
+  import std/net as snet
+
+  suite "async connect timeout":
+    test "dialAsync gives up on a server that never accepts":
+      # A listener that never accepts, with its queue full: further SYNs are dropped.
+      let lst = snet.newSocket()
+      lst.setSockOpt(snet.OptReuseAddr, true)
+      lst.bindAddr(Port(0), "127.0.0.1")
+      lst.listen(1)
+      let port = lst.getLocalAddr()[1]
+      var fillers: seq[snet.Socket]
+      for _ in 0 ..< 8:
+        let f = snet.newSocket()
+        try:
+          f.connect("127.0.0.1", port, 200)
+          fillers.add f
+        except CatchableError:
+          f.close()
+          break
+      defer:
+        for f in fillers: f.close()
+        lst.close()
+      if fillers.len >= 8:
+        skip()
+      else:
+        proc go(port: int) {.async.} =
+          let started = Moment.now()
+          var code = scOk
+          try:
+            discard await dialAsync("127.0.0.1", port, connectTimeoutMs = 300)
+          except GrpcError as e:
+            code = e.code
+          let took = Moment.now() - started
+          ck code == scUnavailable
+          ck took >= 250.milliseconds and took < 3.seconds
+        run go(port.int)
