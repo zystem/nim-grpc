@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- `Limits` for both servers (`limits` of `newGrpcServer`, `newAsyncGrpcServer`, `newStreamServer`, `newAsyncStreamServer`): `maxConcurrentStreams` (announced to clients as SETTINGS_MAX_CONCURRENT_STREAMS, 100 by default; a client that ignores it gets REFUSED_STREAM), `maxConnections` (a connection past the limit is closed at once; no limit by default) and `maxConnectionBuffer` (body bytes queued on all streams of a connection that the socket has not taken, 16 MiB by default; a sender waits above it). Tests in `tests/tlimits.nim` and `tests/tasynclimits.nim`.
+
+### Security
+- nghttp2 1.57.0 or later is required, which limits the Rapid Reset attack (CVE-2023-44487): the build fails with an `#error` against an older header, and a test checks the linked library's version.
+
+### Changed
+- A server now announces 100 concurrent streams per connection; before, nghttp2's default (no limit) applied. Set `Limits(maxConcurrentStreams: 0)` for the old behaviour. See [docs/upgrading.md](docs/upgrading.md).
+
 ## 0.1.0 — 2026-11-03
 
 ### Changed

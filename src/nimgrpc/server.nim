@@ -15,7 +15,7 @@
 import std/[tables, strutils]
 import ./status, ./wire, ./h2/blocking, ./compress/gzip
 export status, blocking.TlsConfig, blocking.tlsClientConfig, blocking.tlsServerConfig,
-       blocking.TlsError, blocking.Keepalive, blocking.PingPolicy, blocking.CipherOrder,
+       blocking.TlsError, blocking.Keepalive, blocking.PingPolicy, blocking.Limits, blocking.CipherOrder,
        blocking.setCipherOrder, blocking.setSessionLifetime, blocking.defaultSessionLifetime
 
 type
@@ -271,15 +271,18 @@ proc handle(st: var ServerStream; userData: pointer) {.nimcall, gcsafe, raises: 
 
 proc newGrpcServer*(port = 0; address = "127.0.0.1"; maxWorkers = 256;
                     maxMessage = defaultMaxMessage; tls: TlsConfig = nil;
-                    keepalive = Keepalive(); pingPolicy = PingPolicy()): GrpcServer =
+                    keepalive = Keepalive(); pingPolicy = PingPolicy();
+                    limits = Limits()): GrpcServer =
   ## At most `maxWorkers` calls run at once; more wait for a free worker.
+  ## `limits` caps the streams of a connection, the connections and the bytes
+  ## queued per connection (see `Limits`; 100 streams by default).
   ## With `tls` (see `tlsServerConfig`) clients must use TLS 1.2 with ALPN h2.
   ## `keepalive` pings idle clients; `pingPolicy` limits how often clients
   ## may ping (gRPC's enforcement policy; off by default).
   result = GrpcServer()
   result.reg.maxMessage = maxMessage
   result.h2 = newStreamServer(handle, result.reg.addr, Port(port), address,
-                              maxWorkers, tls, keepalive, pingPolicy)
+                              maxWorkers, tls, keepalive, pingPolicy, limits)
 
 proc addUnaryRaw*(s: GrpcServer; path: string; handler: RawUnaryHandler;
                   userData: pointer) =

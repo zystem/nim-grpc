@@ -29,6 +29,21 @@ type
     permitWithoutCalls*: bool
       ## Pings while no call is in progress are allowed (else they are strikes).
 
+  Limits* = object
+    ## What a server accepts from its peers; the defaults suit most programs.
+    maxConcurrentStreams*: int = 100
+      ## Streams a client may have open at once on one connection (announced
+      ## as SETTINGS_MAX_CONCURRENT_STREAMS; one more is refused with
+      ## REFUSED_STREAM). 0 leaves nghttp2's default, which is no limit.
+    maxConnections*: int = 0
+      ## Connections served at once; a connection past the limit is closed
+      ## at once. 0 means no limit.
+    maxConnectionBuffer*: int = 16 * 1024 * 1024
+      ## Body bytes that handlers have queued on all the streams of one
+      ## connection and the socket has not taken; a sender waits above it.
+      ## Together with `maxStreamBuffer` this bounds what a peer that does not
+      ## read can make us hold. 0 means no limit beyond `maxStreamBuffer`.
+
 const
   readChunk* = 16 * 1024
   maxOutQueue* = 256 * 1024        ## bytes framed and waiting for the socket

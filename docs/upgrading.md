@@ -6,6 +6,9 @@ General steps: update the package (`nimble install nimgrpc@X.Y.Z` or the new com
 
 ## Unreleased
 
+- **Limits**: a server announces at most 100 concurrent streams per connection (`Limits.maxConcurrentStreams`); a client library that respects SETTINGS (nghttp2, grpc-go) queues the rest, so only a program that needs more than 100 calls at once on one connection notices. Pass `limits = Limits(maxConcurrentStreams: 0)` to keep the former, unlimited behaviour. New `maxConnections` (off) and `maxConnectionBuffer` (16 MiB) are described in [threat-model.md](threat-model.md).
+- **nghttp2**: 1.57.0 or later is required; an older header fails the build.
+
 ## 0.1.0
 
 - **The package and the modules are called `nimgrpc`** (the name `grpc` in the nimble directory belongs to another project). Install with `nimble install nimgrpc`, and in a `.nimble` file write `requires "nimgrpc >= 0.1.0"`. In your code replace `import grpc` with `import nimgrpc` and `grpc/...` with `nimgrpc/...` in every import (`grpc/protobuf`, `grpc/typed`, `grpc/h2/blocking`, `grpc/wkt/...`), for example `sed -i -E 's/\b(import|from) grpc\b/\1 nimgrpc/; s/\bgrpc\/(protobuf|typed|asynctyped|wkt|h2|tls|compress|client|server|asyncclient|asyncserver|wire|status)/nimgrpc\/\1/g'`. The generated code of your `.proto` files imports the library too: regenerate it with the new `protoc-gen-nim`. Nothing else changes in the API.
