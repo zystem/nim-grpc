@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+## 0.2.1 — 2026-11-03
+
 ### Added
 - [docs/releasing.md](docs/releasing.md): how a maintainer makes a release (the release pull request, the signed tag, the GitHub release), and `tools/release_notes.sh X.Y.Z`, which prints the notes of a version from the changelog.
 - `nimble lint` (run in CI): the compiler's style check as an error and warnings as failures over the library, the plugin, the tests and the tools. The generated code is exempt from the style check (proto names keep their spelling; `protoc-gen-nim` now writes `{.push styleChecks: off.}`). A release build of the repository compiles its C with `-fstack-protector-strong -D_FORTIFY_SOURCE=2`.
-- Release tags are signed (SSH key) from the next release; how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
+- Release tags are signed (SSH key), from this release on (the tags up to 0.2.0 are not); how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
 
 ### Fixed
 - The fuzz workflow took its `seconds` input into the text of a shell command; it is now passed as an environment variable and checked to be a number.
