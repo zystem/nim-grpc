@@ -9,9 +9,9 @@ import ../status
 {.compile: currentSourcePath.parentDir / "ggz.c".}
 when defined(zlibStatic):
   const zlibLib {.strdefine.} = "/usr/lib/x86_64-linux-gnu/libz.a"
-  {.passL: zlibLib.}
+  {.passl: zlibLib.}
 else:
-  {.passL: "-lz".}
+  {.passl: "-lz".}
 
 {.push importc, cdecl, raises: [], gcsafe.}
 proc ggz_compress(src: ptr byte; len: csize_t; level: cint;

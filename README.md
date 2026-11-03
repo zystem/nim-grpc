@@ -191,6 +191,8 @@ right away.
 
 ## Building
 
+Install with `nimble install nimgrpc` (or `nimble install https://github.com/zystem/nimgrpc` until the nimble directory lists it) after building nghttp2 once, as below; `nimble uninstall nimgrpc` removes it.
+
 Dependencies: Nim 2.2.12 or later, [nim-bearssl](https://github.com/status-im/nim-bearssl)
 (`nimble install bearssl`; BearSSL is compiled from source, nothing to install),
 zlib (`-lz`; `-d:zlibStatic` links `libz.a`) and nghttp2, linked statically. Build nghttp2 once:

@@ -8,3 +8,7 @@ if existsEnv("NIM_BEARSSL"): switch("path", getEnv("NIM_BEARSSL"))
 if existsEnv("NIM_PATHS"):
   for p in getEnv("NIM_PATHS").split(':'):
     if p.len > 0: switch("path", p)
+# Hardening of what this repository builds (the C parts and the generated C of
+# a release build); a program that links the library passes the same flags.
+when defined(release) or defined(danger):
+  switch("passC", "-fstack-protector-strong -D_FORTIFY_SOURCE=2")

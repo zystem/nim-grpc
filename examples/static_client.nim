@@ -2,7 +2,7 @@
 ## client-streaming call, both through generated code.
 import std/[os, strutils]
 import nimgrpc
-import nimgrpc/testing/test_pb
+import grpc/testing/test_pb
 
 let certs = paramStr(1)
 let ch = dial("127.0.0.1", parseInt(paramStr(2)),
