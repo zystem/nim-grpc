@@ -4,6 +4,7 @@
 
 ### Added
 - `nimble lint` (run in CI): the compiler's style check as an error and warnings as failures over the library, the plugin, the tests and the tools. The generated code is exempt from the style check (proto names keep their spelling; `protoc-gen-nim` now writes `{.push styleChecks: off.}`). A release build of the repository compiles its C with `-fstack-protector-strong -D_FORTIFY_SOURCE=2`.
+- Release tags are signed (SSH key) from the next release; how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
 
 ### Fixed
 - `examples/static_client.nim` imported `nimgrpc/testing/test_pb`, which the 0.1.0 rename had changed by mistake; it is `grpc/testing/test_pb` (the generated code of the test protos, `-p:tests/gen`).
