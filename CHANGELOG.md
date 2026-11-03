@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- [docs/releasing.md](docs/releasing.md): how a maintainer makes a release (the release pull request, the signed tag, the GitHub release), and `tools/release_notes.sh X.Y.Z`, which prints the notes of a version from the changelog.
+
 ### Fixed
 - `tests/tlimits.nim` sometimes failed under AddressSanitizer (a 16 KiB leak of a worker thread's cycle roots, seen in CI on Nim 2.2.14): the test opened its burst of calls on a new connection, the server refused the excess with REFUSED_STREAM (which the test did not check), and the exceptions of the refused calls left cycle roots in the threads of the test. The test now makes one call first and checks every reply. The behaviour itself is documented in [docs/upgrading.md](docs/upgrading.md).
 
