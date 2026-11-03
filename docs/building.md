@@ -32,3 +32,11 @@ A different prefix is passed with `-d:nghttp2Prefix=/path`. The README has the v
 ## Hardening
 
 A release build of this repository (`-d:release`) compiles its C with `-fstack-protector-strong -D_FORTIFY_SOURCE=2` (`config.nims`). That file applies only when building inside the repository: a program that links the library should pass the same flags (`--passC`) and, for an executable, position-independent code and full RELRO (`--passC:-fPIE --passL:"-pie -Wl,-z,relro,-z,now"`). The memory-safety of the Nim code is the compiler's (`--mm:orc --panics:on`), and the whole suite runs under AddressSanitizer and ThreadSanitizer in CI.
+
+## Build variables, debug information, repeatability
+
+- **`CC`, `CFLAGS`, `LDFLAGS`** set in the environment reach the C compiler and the linker of every build made in this repository (tests, tools, `protoc_gen_nim`; `config.nims`). They are added to the flags the build uses, never replacing them. A program that links the library passes its own flags through `--passC` and `--passL`, the Nim way.
+- **Debug information** is not removed by the build or by `nimble install`: add `--debugger:native` (or `-g` in `CFLAGS`) and the binary keeps it (`file` says "not stripped"). Nothing in the repository strips.
+- **Repeatable builds**: the same source, the same Nim and C compiler and the same flags give a bit-identical binary; two builds of `tests/tcodec.nim` with `-d:release`, with different `--nimcache` directories, have the same SHA-256.
+- **No recursive builds**: the Nim compiler builds the whole program in one run; there are no makefiles in subdirectories.
+- **Installation**: the library is installed by nimble, into the directory the user chooses (`--nimbleDir`, `NIMBLE_DIR`); the repository has no installer of its own.
