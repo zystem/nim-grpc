@@ -4,15 +4,11 @@
 
 ### Added
 - [docs/releasing.md](docs/releasing.md): how a maintainer makes a release (the release pull request, the signed tag, the GitHub release), and `tools/release_notes.sh X.Y.Z`, which prints the notes of a version from the changelog.
-
-### Fixed
-- `tests/tlimits.nim` sometimes failed under AddressSanitizer (a 16 KiB leak of a worker thread's cycle roots, seen in CI on Nim 2.2.14): the test opened its burst of calls on a new connection, the server refused the excess with REFUSED_STREAM (which the test did not check), and the exceptions of the refused calls left cycle roots in the threads of the test. The test now makes one call first and checks every reply. The behaviour itself is documented in [docs/upgrading.md](docs/upgrading.md).
-
-### Added
 - `nimble lint` (run in CI): the compiler's style check as an error and warnings as failures over the library, the plugin, the tests and the tools. The generated code is exempt from the style check (proto names keep their spelling; `protoc-gen-nim` now writes `{.push styleChecks: off.}`). A release build of the repository compiles its C with `-fstack-protector-strong -D_FORTIFY_SOURCE=2`.
 - Release tags are signed (SSH key) from the next release; how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
 
 ### Fixed
+- `tests/tlimits.nim` sometimes failed under AddressSanitizer (a 16 KiB leak of a worker thread's cycle roots, seen in CI on Nim 2.2.14): the test opened its burst of calls on a new connection, the server refused the excess with REFUSED_STREAM (which the test did not check), and the exceptions of the refused calls left cycle roots in the threads of the test. The test now makes one call first and checks every reply. The behaviour itself is documented in [docs/upgrading.md](docs/upgrading.md).
 - `examples/static_client.nim` imported `nimgrpc/testing/test_pb`, which the 0.1.0 rename had changed by mistake; it is `grpc/testing/test_pb` (the generated code of the test protos, `-p:tests/gen`).
 
 ## 0.2.0 — 2026-11-03
