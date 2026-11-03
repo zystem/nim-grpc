@@ -50,3 +50,6 @@ task lint, "Style (NEP-1) and warnings: nothing may be reported":
       inc bad
   if bad > 0: quit "lint: " & $bad & " file(s) fail"
   echo "lint: ", files.len, " files clean"
+
+task coverage, "Statement coverage of src/nimgrpc (fails under 80%)":
+  exec "tools/coverage.sh"

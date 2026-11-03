@@ -19,9 +19,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [plain, asan]
+        mode: [plain, asan, coverage]
         # the oldest Nim that nimgrpc.nimble allows, and the current stable one (Renovate moves the second)
         nim: ["2.2.12", "2.2.14"]
+        exclude:
+          - mode: coverage          # one Nim version is enough for the coverage figure
+            nim: "2.2.14"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,4 +58,8 @@ jobs:
         run: nimble lint
       - name: Run all test files
         run: |
-          if [ "${{ matrix.mode }}" = asan ]; then nimble asan; else nimble test; fi
+          case "${{ matrix.mode }}" in
+            asan) nimble asan ;;
+            coverage) tools/coverage.sh ;;
+            *) nimble test ;;
+          esac

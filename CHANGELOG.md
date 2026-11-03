@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `nimble coverage` / `tools/coverage.sh`: statement coverage of `src/nimgrpc` from gcov (the Nim compiler's `#line` directives make it report `.nim` lines); 88.8% now, CI fails under 80% (job `tests (coverage, Nim 2.2.12)`). See [docs/building.md](docs/building.md).
 - The builds of this repository honour `CC`, `CFLAGS` and `LDFLAGS` from the environment (added to the flags in use); see [docs/building.md](docs/building.md), which also says how debug information, repeatable builds and installation are handled.
 
 ## 0.2.1 — 2026-11-03
