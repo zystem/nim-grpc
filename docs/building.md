@@ -33,6 +33,10 @@ A different prefix is passed with `-d:nghttp2Prefix=/path`. The README has the v
 
 A release build of this repository (`-d:release`) compiles its C with `-fstack-protector-strong -D_FORTIFY_SOURCE=2` (`config.nims`). That file applies only when building inside the repository: a program that links the library should pass the same flags (`--passC`) and, for an executable, position-independent code and full RELRO (`--passC:-fPIE --passL:"-pie -Wl,-z,relro,-z,now"`). The memory-safety of the Nim code is the compiler's (`--mm:orc --panics:on`), and the whole suite runs under AddressSanitizer and ThreadSanitizer in CI.
 
+## Coverage
+
+`nimble coverage` (or `tools/coverage.sh`) builds every test file with gcov instrumentation, runs it and prints the statement coverage of `src/nimgrpc`; it fails under 80% (`THRESHOLD=85` changes the limit, `OUT` the directory, `NIMGRPC_FLAGS` adds compiler flags). It works because the Nim compiler writes `#line` directives into the C it generates, so `gcov` reports the lines of the `.nim` files; it needs `gcc` with `gcov` 9 or later and `python3`. The figure counts the lines the tests ran in the Nim and C files of the library, the generated well-known types included (88.8% on 2026-11-04), and CI runs it on every pull request (the job `tests (coverage, Nim 2.2.12)`).
+
 ## Build variables, debug information, repeatability
 
 - **`CC`, `CFLAGS`, `LDFLAGS`** set in the environment reach the C compiler and the linker of every build made in this repository (tests, tools, `protoc_gen_nim`; `config.nims`). They are added to the flags the build uses, never replacing them. A program that links the library passes its own flags through `--passC` and `--passL`, the Nim way.
