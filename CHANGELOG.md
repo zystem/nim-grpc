@@ -8,6 +8,7 @@
 - Release tags are signed (SSH key) from the next release; how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
 
 ### Fixed
+- The fuzz workflow took its `seconds` input into the text of a shell command; it is now passed as an environment variable and checked to be a number.
 - `tests/tlimits.nim` sometimes failed under AddressSanitizer (a 16 KiB leak of a worker thread's cycle roots, seen in CI on Nim 2.2.14): the test opened its burst of calls on a new connection, the server refused the excess with REFUSED_STREAM (which the test did not check), and the exceptions of the refused calls left cycle roots in the threads of the test. The test now makes one call first and checks every reply. The behaviour itself is documented in [docs/upgrading.md](docs/upgrading.md).
 - `examples/static_client.nim` imported `nimgrpc/testing/test_pb`, which the 0.1.0 rename had changed by mistake; it is `grpc/testing/test_pb` (the generated code of the test protos, `-p:tests/gen`).
 
