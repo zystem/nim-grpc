@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Release tags are signed (SSH key) from the next release; how to verify one is in [SECURITY.md](SECURITY.md#verifying-a-release), the public key in `docs/allowed_signers`.
+
 ## 0.2.0 — 2026-11-03
 
 ### Added
