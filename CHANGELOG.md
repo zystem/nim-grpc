@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- The builds of this repository honour `CC`, `CFLAGS` and `LDFLAGS` from the environment (added to the flags in use); see [docs/building.md](docs/building.md), which also says how debug information, repeatable builds and installation are handled.
+
 ## 0.2.1 — 2026-11-03
 
 ### Added
