@@ -48,11 +48,15 @@ suite "limits of the blocking server":
     let s = newStreamServer(streamHandler, nil, limits = Limits(maxConcurrentStreams: 2))
     s.start()
     let c = dial("127.0.0.1", s.port)
+    # A burst on a connection that has just been opened would reach the server
+    # before the client has seen its SETTINGS, and the server refuses what is
+    # over the limit (REFUSED_STREAM); once SETTINGS are in, nghttp2 holds
+    # the excess back by itself.
+    check c.request(reqHeaders(s.port, "/w"), "x".toBytes).body.toStr == "x"
     type Arg = tuple[c: ptr Conn; port: Port; ok: ptr int]
     proc worker(a: Arg) {.thread.} =
       let r = a.c[].request(reqHeaders(a.port, "/w"), "x".toBytes)
-      if r.body.toStr == "x": discard
-      a.ok[] = 1
+      a.ok[] = if r.body.toStr == "x": 1 else: 100 + r.errorCode.int
     var ths: array[6, Thread[Arg]]
     var oks: array[6, int]
     for i in 0 ..< ths.len: createThread(ths[i], worker, (c.addr, s.port, oks[i].addr))
