@@ -845,7 +845,9 @@ proc generate(reg: Registry; f: var FileDesc; opts: GenOptions): string =
     if opts.async:
       o.add g.genAsyncService(s)
       o.add ""
+  while o[^1] == "": o.setLen(o.len - 1)
   o.add "{.pop.}"
+  o.add ""
   o.join("\n")
 
 # ================================================================ plugin I/O
