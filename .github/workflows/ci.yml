@@ -50,6 +50,9 @@ jobs:
           nim-version: ${{ matrix.nim }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: nimble install -y --depsOnly
+      - name: Style and warnings (nimble lint)
+        if: matrix.mode == 'plain'
+        run: nimble lint
       - name: Run all test files
         run: |
           if [ "${{ matrix.mode }}" = asan ]; then nimble asan; else nimble test; fi

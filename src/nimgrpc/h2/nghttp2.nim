@@ -8,8 +8,8 @@
 const nghttp2Prefix* {.strdefine.} = "/opt/nghttp2"
   ## Install prefix of a static nghttp2 build (include/ and lib/).
 
-{.passC: "-I" & nghttp2Prefix & "/include".}
-{.passL: nghttp2Prefix & "/lib/libnghttp2.a".}
+{.passc: "-I" & nghttp2Prefix & "/include".}
+{.passl: nghttp2Prefix & "/lib/libnghttp2.a".}
 
 const h = "nghttp2/nghttp2.h"
 

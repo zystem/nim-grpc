@@ -1,4 +1,4 @@
-## Interop peer in Nim, on code generated from nimgrpc/testing/test.proto
+## Interop peer in Nim, on code generated from grpc/testing/test.proto
 ## (tests/gen): a grpc.testing.TestService server and a client running the
 ## interop cases from nimgrpc/grpc doc/interop-test-descriptions.md.
 ##

@@ -80,12 +80,12 @@ proc closeAndRecv*[Req, Resp](c: var ClientWriter[Req, Resp]): Resp =
   if c.raw.recv(extra):
     raise newGrpcError(scInternal, "client-streaming call got more than one response")
 
-template forwardCallProcs(T: untyped) =
-  proc close*(c: var T) = c.raw.close()
-  proc cancel*(c: var T) = c.raw.cancel()
-  proc headers*(c: T): Metadata = c.raw.headers
-  proc trailers*(c: T): Metadata = c.raw.trailers
-  proc lastCompressed*(c: T): bool = c.raw.lastCompressed
+template forwardCallProcs(callType: untyped) =
+  proc close*(c: var callType) = c.raw.close()
+  proc cancel*(c: var callType) = c.raw.cancel()
+  proc headers*(c: callType): Metadata = c.raw.headers
+  proc trailers*(c: callType): Metadata = c.raw.trailers
+  proc lastCompressed*(c: callType): bool = c.raw.lastCompressed
 
 forwardCallProcs(ClientReader)
 forwardCallProcs(ClientWriter)
