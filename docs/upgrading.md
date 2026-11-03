@@ -6,6 +6,8 @@ General steps: update the package (`nimble install nimgrpc@X.Y.Z` or the new com
 
 ## Unreleased
 
+## 0.2.0
+
 - **Limits**: a server announces at most 100 concurrent streams per connection (`Limits.maxConcurrentStreams`); a client library that respects SETTINGS (nghttp2, grpc-go) queues the rest, so only a program that needs more than 100 calls at once on one connection notices. Pass `limits = Limits(maxConcurrentStreams: 0)` to keep the former, unlimited behaviour. New `maxConnections` (off) and `maxConnectionBuffer` (16 MiB) are described in [threat-model.md](threat-model.md).
 - **nghttp2**: 1.57.0 or later is required; an older header fails the build.
 

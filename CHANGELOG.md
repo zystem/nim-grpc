@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-03
+
 ### Added
 - `Limits` for both servers (`limits` of `newGrpcServer`, `newAsyncGrpcServer`, `newStreamServer`, `newAsyncStreamServer`): `maxConcurrentStreams` (announced to clients as SETTINGS_MAX_CONCURRENT_STREAMS, 100 by default; a client that ignores it gets REFUSED_STREAM), `maxConnections` (a connection past the limit is closed at once; no limit by default) and `maxConnectionBuffer` (body bytes queued on all streams of a connection that the socket has not taken, 16 MiB by default; a sender waits above it). Tests in `tests/tlimits.nim` and `tests/tasynclimits.nim`.
 
