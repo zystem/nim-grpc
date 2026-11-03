@@ -72,12 +72,12 @@ proc closeAndRecv*[Req, Resp](c: AsyncClientWriter[Req, Resp]): Future[Resp] {.a
     raise newGrpcError(scInternal, "client-streaming call got more than one response")
   return decodeMsg[Resp](raw.get, scInternal)
 
-template forwardCallProcs(T: untyped) =
-  proc close*(c: T) = c.raw.close()
-  proc cancel*(c: T) = c.raw.cancel()
-  proc headers*(c: T): Metadata = c.raw.headers
-  proc trailers*(c: T): Metadata = c.raw.trailers
-  proc lastCompressed*(c: T): bool = c.raw.lastCompressed
+template forwardCallProcs(callType: untyped) =
+  proc close*(c: callType) = c.raw.close()
+  proc cancel*(c: callType) = c.raw.cancel()
+  proc headers*(c: callType): Metadata = c.raw.headers
+  proc trailers*(c: callType): Metadata = c.raw.trailers
+  proc lastCompressed*(c: callType): bool = c.raw.lastCompressed
 
 forwardCallProcs(AsyncClientReader)
 forwardCallProcs(AsyncClientWriter)

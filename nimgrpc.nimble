@@ -28,3 +28,25 @@ task asan, "Run the tests under AddressSanitizer/LeakSanitizer":
 task tsan, "Run the tests under ThreadSanitizer":
   runAll("-d:useMalloc --debugger:native " &
          "--passC:-fsanitize=thread --passL:-fsanitize=thread", "tsan")
+
+task lint, "Style (NEP-1) and warnings: nothing may be reported":
+  # `nim check` of the library, the plugin, the tests and the tools with the
+  # style check as an error and warnings on; any "Warning:" fails the task.
+  # NIMGRPC_FLAGS adds compiler flags (for example -d:nghttp2Prefix=...).
+  var files = @["src/nimgrpc.nim", "src/nimgrpc/asyncclient.nim",
+                "src/nimgrpc/asyncserver.nim", "src/nimgrpc/asynctyped.nim",
+                "src/nimgrpc/typed.nim", "src/nimgrpc/wkt.nim",
+                "src/protoc_gen_nim.nim"]
+  for t in tests: files.add t
+  for t in ["asyncbench", "asyncload", "fuzz", "h2specasync", "h2specserver",
+            "hsbench", "tlsbench"]:
+    files.add "tools/" & t & ".nim"
+  var bad = 0
+  for f in files:
+    let (output, code) = gorgeEx("nim check --hints:off --warnings:on " &
+      "--styleCheck:error -p:tests/gen " & getEnv("NIMGRPC_FLAGS") & " " & f)
+    if code != 0 or "Warning:" in output:
+      echo "FAILED: ", f, "\n", output
+      inc bad
+  if bad > 0: quit "lint: " & $bad & " file(s) fail"
+  echo "lint: ", files.len, " files clean"
